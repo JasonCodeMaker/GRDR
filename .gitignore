@@ -1,0 +1,14 @@
+output
+dataset
+reranker/xpool/video_features_cache
+reranker/xpool/ckpt
+wandb
+cache
+
+# ----------------------------------------------------------------------------
+# Python Runtime
+# ----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
