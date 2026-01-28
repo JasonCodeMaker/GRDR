@@ -236,11 +236,6 @@ def main():
     # Parse arguments using AllConfig
     config = AllConfig()
 
-    config.arch = "clip_baseline"
-    config.pooling_type = "avg"
-    config.dataset_name = 'LSMDC'
-    config.videos_dir = 'dataset/LSMDC/LSMDC_Videos'
-
     # Add custom arguments for feature extraction
     parser = argparse.ArgumentParser(description='Extract video features for caching')
     parser.add_argument('--cache_dir', type=str,
