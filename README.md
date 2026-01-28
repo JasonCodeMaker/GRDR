@@ -84,6 +84,42 @@ For full evaluation across all datasets:
 - **Inductive setting**: `scripts/eval_t1.sh` (--setting 1)
 - **Full-corpus setting**: `scripts/eval_t2.sh` (--setting 2)
 
+### Pre-extract Video Features
+
+Before running latency benchmarks or full-corpus evaluation, pre-extract CLIP video features:
+
+```bash
+# MSR-VTT (extract both train and test splits for full-corpus evaluation)
+python reranker/xpool/utils/extract_video_features.py \
+    --dataset_name MSRVTT \
+    --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
+    --checkpoint reranker/xpool/ckpt/msrvtt9k_model_best.pth \
+    --cache_dir reranker/xpool/video_features_cache/Xpool \
+    --split train
+
+python reranker/xpool/utils/extract_video_features.py \
+    --dataset_name MSRVTT \
+    --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
+    --checkpoint reranker/xpool/ckpt/msrvtt9k_model_best.pth \
+    --cache_dir reranker/xpool/video_features_cache/Xpool \
+    --split test
+```
+
+### Inference Latency Testing
+
+Measure per-query latency for the two-stage GRDR pipeline:
+
+```bash
+# MSR-VTT (with GRDR candidate reranking)
+CUDA_VISIBLE_DEVICES=0 python reranker/xpool/test_perquery.py \
+    --dataset_name MSRVTT \
+    --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
+    --checkpoint reranker/xpool/ckpt/msrvtt9k_model_best.pth \
+    --candidate_file candidates/msrvtt_c128l3_100_candidates_t2.json \
+    --cache_dir reranker/xpool/video_features_cache/Xpool/MSRVTT \
+    --expanded_pool --huggingface --seed 42
+```
+
 ## Training
 
 ```bash

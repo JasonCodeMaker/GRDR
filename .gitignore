@@ -6,12 +6,10 @@ dataset/*
 cache/*
 !cache/.gitkeep
 
-# Ignore specific reranker subfolders, but keep the folders
-reranker/xpool/video_features_cache/*
-!reranker/xpool/video_features_cache/.gitkeep
+reranker/xpool/video_features_cache
+reranker/xpool/ckpt/
 
-reranker/xpool/ckpt/*
-!reranker/xpool/ckpt/.gitkeep
+output
 
 wandb
 logs
