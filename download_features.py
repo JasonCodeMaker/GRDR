@@ -4,7 +4,7 @@ Download GRDR-TVR dataset components from Hugging Face Hub.
 
 This script provides a convenient way to download specific components
 of the GRDR-TVR dataset including InternVideo2 features, GRDR checkpoints,
-and Xpool reranker models.
+Xpool reranker checkpoints, and Xpool video features.
 
 Examples:
     # Download everything
@@ -16,12 +16,17 @@ Examples:
     # Download GRDR checkpoints for all datasets
     python download_features.py --grdr
 
-    # Download Xpool reranker for specific dataset
+    # Download Xpool reranker checkpoints for specific dataset
     python download_features.py --xpool --datasets msrvtt
+    
+    # Download Xpool video features
+    python download_features.py --xpool-features --datasets msrvtt
 """
 
 import argparse
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from huggingface_hub import snapshot_download, hf_hub_download
 from tqdm import tqdm
@@ -91,14 +96,27 @@ def download_xpool_features(datasets, output_dir="./reranker/xpool/video_feature
     for dataset in datasets:
         print(f"\n Downloading {dataset} Xpool features...")
         try:
+            # Download to a temp location to strip the Xpool_features prefix
+            temp_dir = xpool_features_dir.parent.parent
             snapshot_download(
                 repo_id=REPO_ID,
                 repo_type="dataset",
                 allow_patterns=f"Xpool_features/{dataset}/**",
-                local_dir=xpool_features_dir.parent,
+                local_dir=temp_dir,
                 local_dir_use_symlinks=False,
             )
-            print(f"✓ {dataset} Xpool features downloaded to {xpool_features_dir / dataset}")
+            # Move from temp_dir/Xpool_features/{dataset} to xpool_features_dir/{dataset}
+            src_path = temp_dir / "Xpool_features" / dataset
+            dst_path = xpool_features_dir / dataset
+            if src_path.exists():
+                dst_path.parent.mkdir(parents=True, exist_ok=True)
+                if dst_path.exists():
+                    shutil.rmtree(dst_path)
+                shutil.move(str(src_path), str(dst_path))
+                # Clean up empty Xpool_features directory
+                if (temp_dir / "Xpool_features").exists() and not any((temp_dir / "Xpool_features").iterdir()):
+                    (temp_dir / "Xpool_features").rmdir()
+            print(f"✓ {dataset} Xpool features downloaded to {dst_path}")
         except Exception as e:
             print(f"✗ Error downloading {dataset} Xpool features: {e}")
 
@@ -128,14 +146,19 @@ def download_xpool_checkpoints(datasets, output_dir="./reranker/xpool/ckpt"):
         print(f"\n Downloading {dataset} Xpool checkpoint...")
         
         try:
-            file_path = hf_hub_download(
-                repo_id=REPO_ID,
-                repo_type="dataset",
-                filename=f"Xpool/{filename}",
-                local_dir=xpool_dir.parent.parent,
-                local_dir_use_symlinks=False,
-            )
-            print(f"✓ {dataset} Xpool checkpoint downloaded to {xpool_dir / filename}")
+            # Download to a temp location to strip the Xpool prefix
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_path = hf_hub_download(
+                    repo_id=REPO_ID,
+                    repo_type="dataset",
+                    filename=f"Xpool/{filename}",
+                    local_dir=temp_dir,
+                    local_dir_use_symlinks=False,
+                )
+                # Move from temp_dir/Xpool/{filename} to xpool_dir/{filename}
+                dst_path = xpool_dir / filename
+                shutil.copy2(file_path, dst_path)
+            print(f"✓ {dataset} Xpool checkpoint downloaded to {dst_path}")
         except Exception as e:
             print(f"✗ Error downloading {dataset} Xpool checkpoint: {e}")
 
@@ -156,14 +179,18 @@ def download_scripts(output_dir="./scripts"):
     
     for script in script_files:
         try:
-            file_path = hf_hub_download(
-                repo_id=REPO_ID,
-                repo_type="dataset",
-                filename=script,
-                local_dir=".",
-                local_dir_use_symlinks=False,
-            )
-            print(f"✓ {script} downloaded")
+            with tempfile.TemporaryDirectory() as temp_dir:
+                file_path = hf_hub_download(
+                    repo_id=REPO_ID,
+                    repo_type="dataset",
+                    filename=script,
+                    local_dir=temp_dir,
+                    local_dir_use_symlinks=False,
+                )
+                # Copy to the desired output directory
+                dst_path = scripts_dir / script
+                shutil.copy2(file_path, dst_path)
+            print(f"✓ {script} downloaded to {dst_path}")
         except Exception as e:
             print(f"⊘ {script} not available: {e}")
 
@@ -183,6 +210,9 @@ Examples:
   # Download GRDR checkpoints for MSR-VTT and ActivityNet
   python download_features.py --grdr --datasets msrvtt actnet
 
+  # Download Xpool checkpoints and features for DiDeMo
+  python download_features.py --xpool --xpool-features --datasets didemo
+
   # Download all components for DiDeMo
   python download_features.py --all --datasets didemo
         """
@@ -192,7 +222,7 @@ Examples:
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Download all components (features, GRDR, Xpool)",
+        help="Download all components (features, GRDR, Xpool checkpoints, Xpool features)",
     )
     parser.add_argument(
         "--features",
@@ -208,6 +238,11 @@ Examples:
         "--xpool",
         action="store_true",
         help="Download Xpool reranker checkpoints",
+    )
+    parser.add_argument(
+        "--xpool-features",
+        action="store_true",
+        help="Download Xpool video features",
     )
     parser.add_argument(
         "--scripts",
@@ -243,12 +278,18 @@ Examples:
         default="./reranker/xpool/ckpt",
         help="Output directory for Xpool checkpoints (default: ./reranker/xpool/ckpt)",
     )
+    parser.add_argument(
+        "--xpool-features-dir",
+        type=str,
+        default="./reranker/xpool/video_features_cache",
+        help="Output directory for Xpool video features (default: ./reranker/xpool/video_features_cache)",
+    )
     
     args = parser.parse_args()
     
     # Validate: at least one component must be selected
-    if not any([args.all, args.features, args.grdr, args.xpool, args.scripts]):
-        parser.error("Please specify at least one component: --all, --features, --grdr, --xpool, or --scripts")
+    if not any([args.all, args.features, args.grdr, args.xpool, args.xpool_features, args.scripts]):
+        parser.error("Please specify at least one component: --all, --features, --grdr, --xpool, --xpool-features, or --scripts")
     
     print(f"\n{'='*70}")
     print(f"GRDR-TVR Dataset Downloader")
@@ -266,6 +307,9 @@ Examples:
     
     if args.all or args.xpool:
         download_xpool_checkpoints(args.datasets, args.xpool_dir)
+    
+    if args.all or args.xpool_features:
+        download_xpool_features(args.datasets, args.xpool_features_dir)
     
     if args.scripts:
         download_scripts()
