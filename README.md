@@ -1,4 +1,4 @@
-# GRDR: Generative Recall, Dense Reranking
+# GRDR: Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval
 
 [![arXiv](https://img.shields.io/badge/arXiv-XXXX.XXXXX-b31b1b.svg)](https://arxiv.org/abs/XXXX.XXXXX)
 [![HuggingFace](https://img.shields.io/badge/HuggingFace-GRDR--TVR-yellow)](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR)
@@ -32,6 +32,8 @@ pip install transformers==4.47.0 accelerate==1.11.0 faiss-cpu==1.8.0 wandb==0.21
 ## Data Preparation
 
 All features and checkpoints are hosted on HuggingFace: [JasonCoderMaker/GRDR-TVR](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR)
+
+> **Note:** You only need to download the dataset(s) you plan to use. There is no need to download all four datasets.
 
 **Download all components for a specific dataset:**
 ```bash
@@ -80,9 +82,9 @@ python reranker/xpool/test.py --dataset_name MSRVTT --rerank_mode \
     --candidate_file candidates/msrvtt_c128l3_100_candidates_t1.json
 ```
 
-For full evaluation across all datasets:
-- **Inductive setting**: `scripts/eval_t1.sh` (--setting 1)
-- **Full-corpus setting**: `scripts/eval_t2.sh` (--setting 2)
+For full evaluation commands across all datasets, see the evaluation scripts:
+- **Inductive setting**: [`scripts/eval_t1.sh`](scripts/eval_t1.sh) (--setting 1)
+- **Full-corpus setting**: [`scripts/eval_t2.sh`](scripts/eval_t2.sh) (--setting 2)
 
 ### Pre-extract Video Features
 
@@ -107,7 +109,7 @@ python reranker/xpool/utils/extract_video_features.py \
 
 ### Inference Latency Testing
 
-Measure per-query latency for the two-stage GRDR pipeline:
+Measure per-query latency for the two-stage GRDR pipeline. For detailed commands across all datasets, see the scripts under [`reranker/xpool/scripts/`](reranker/xpool/scripts/).
 
 ```bash
 # MSR-VTT (with GRDR candidate reranking)
