@@ -8,7 +8,7 @@
   <img src="assets/framework.png" width="90%">
 </p>
 
-Official implementation of **"Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval"** (Submitted to SIGIR 2026).
+Official implementation of **"Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval"**.
 
 ## Overview
 
