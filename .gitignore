@@ -10,9 +10,12 @@ reranker/xpool/video_features_cache
 reranker/xpool/ckpt/
 
 output
-
+graphify-out
 wandb
 logs
+data/*/none/
+output/baseline/
+candidates/baseline/
 # ----------------------------------------------------------------------------
 # Python Runtime
 # ----------------------------------------------------------------------------
