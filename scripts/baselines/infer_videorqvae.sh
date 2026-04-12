@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/_common.sh"
 
 DATASET="${DATASET:-msrvtt}"
 MODE="${MODE:-none}"
@@ -16,6 +17,7 @@ GPU_ID="${GPU_ID:-0}"
 SETTING="${SETTING:-2}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/baseline}"
 CANDIDATE_OUTPUT_DIR="${CANDIDATE_OUTPUT_DIR:-candidates/baseline}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 if [[ -n "${CHECKPOINT_PATH:-}" ]]; then
   RESOLVED_CHECKPOINT="$CHECKPOINT_PATH"
@@ -44,8 +46,9 @@ if [[ "$(basename "$RESOLVED_CHECKPOINT")" != "best_model" ]]; then
   echo "Got: $RESOLVED_CHECKPOINT" >&2
   exit 1
 fi
+extra_args=("$@")
 
-python -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
+run_cmd "$PYTHON_BIN" -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
   --dataset "$DATASET" \
   --mode "$MODE" \
   --index_type videorqvae \
@@ -60,4 +63,4 @@ python -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
   --candidate_output_dir "$CANDIDATE_OUTPUT_DIR" \
   --eval_checkpoint "$RESOLVED_CHECKPOINT" \
   --eval \
-  "$@"
+  "${extra_args[@]}"

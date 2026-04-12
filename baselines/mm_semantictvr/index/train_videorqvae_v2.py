@@ -92,7 +92,7 @@ def parse_args():
 
     # Data
     parser.add_argument("--dataset", type=str, default="msrvtt", choices=["msrvtt", "didemo", "actnet", "activitynet", "lsmdc"])
-    parser.add_argument("--features_root", type=str, default="./data_process/datasets/features")
+    parser.add_argument("--features_root", type=str, default="./dataset/features")
 
     # Model
     parser.add_argument("--num_latent_tokens", type=int, default=4)

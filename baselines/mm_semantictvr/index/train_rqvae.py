@@ -33,7 +33,7 @@ def parse_args():
                         choices=['msrvtt', 'didemo', 'actnet', 'lsmdc', 'activitynet'],
                         help="Dataset name")
     parser.add_argument("--features_root", type=str,
-                        default="./data_process/datasets/features",
+                        default="./dataset/features",
                         help="Path to features directory")
 
     # Model hyperparameters

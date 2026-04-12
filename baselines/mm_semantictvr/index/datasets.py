@@ -89,7 +89,7 @@ class MultiTextVideoDataset(data.Dataset):
     efficient multi-positive learning and router training.
     """
 
-    def __init__(self, dataset_name, features_root="./data_process/datasets/features", split="train",
+    def __init__(self, dataset_name, features_root="./dataset/features", split="train",
                  feature_extractor="CLIP", video_features=None, text_features=None, num_latent_tokens=1):
         """
         Args:
@@ -407,7 +407,7 @@ class VideoTextGuidedDataset(data.Dataset):
     This enables both architectures to work with the same InternVL features.
     """
     
-    def __init__(self, dataset_name, features_root="./data_process/datasets/features", split="train", text_guided=True, feature_extractor="CLIP", model_type="rqvae", video_features=None, text_features=None):
+    def __init__(self, dataset_name, features_root="./dataset/features", split="train", text_guided=True, feature_extractor="CLIP", model_type="rqvae", video_features=None, text_features=None):
         """
         Args:
             dataset_name: 'msrvtt', 'didemo', 'activitynet', or 'lsmdc'

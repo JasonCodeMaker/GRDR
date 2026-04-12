@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd -- "${SCRIPT_DIR}/../.." && pwd)
 cd "$ROOT_DIR"
+source "$ROOT_DIR/scripts/_common.sh"
 
 DATASET="${DATASET:-msrvtt}"
 MODE="${MODE:-none}"
@@ -13,6 +14,7 @@ TRAIN_BATCH_SIZE="${TRAIN_BATCH_SIZE:-256}"
 GPU_ID="${GPU_ID:-0}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/baseline}"
 VERSION="${VERSION:-2.0}"
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 case "$DATASET" in
   actnet|didemo)
@@ -34,7 +36,9 @@ elif [[ "${FP16:-0}" == "1" ]]; then
   PRECISION_ARGS+=(--float16)
 fi
 
-python -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
+extra_args=("$@")
+
+run_cmd "$PYTHON_BIN" -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
   --dataset "$DATASET" \
   --mode "$MODE" \
   --index_type standard \
@@ -46,4 +50,4 @@ python -m baselines.mm_semantictvr.retriever.avg_train_retriever_t5 \
   --gpu_id "$GPU_ID" \
   --version "$VERSION" \
   "${PRECISION_ARGS[@]}" \
-  "$@"
+  "${extra_args[@]}"
