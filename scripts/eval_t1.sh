@@ -1,168 +1,144 @@
 #!/usr/bin/env bash
+set -euo pipefail
 
-source /data2/uqzzha35/miniconda3/etc/profile.d/conda.sh
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+cd "$ROOT_DIR"
 
-DEVICE=0
+source "$SCRIPT_DIR/_common.sh"
+source_conda_sh
 
-# # MSRVTT
-# EVAL_CHECKPOINT="output/GRDR/msrvtt/best_model/best_model.pt"
-# CODE_BOOK_SIZE=128   
-# CODE_LENGTH=3        
-# BATCH_SIZE=1      
-# NUM_CANDIDATES=(100)
-# for num_candidates in "${NUM_CANDIDATES[@]}"; do
-#     conda activate semantictvr
-#     python run.py \
-#         --device "${DEVICE}" \
-#         --dataset msrvtt \
-#         --num_latent_tokens 4 \
-#         --code_num "${CODE_BOOK_SIZE}" \
-#         --max_length "${CODE_LENGTH}" \
-#         --eval_checkpoint "${EVAL_CHECKPOINT}" \
-#         --batch_size "${BATCH_SIZE}" \
-#         --num_candidates "${num_candidates}" \
-#         --setting 1 \
-#         --eval
-#     conda deactivate
+DEVICE="${DEVICE:-0}"
+RUN_GRDR_STAGE1="${RUN_GRDR_STAGE1:-1}"
+RUN_XPOOL_STAGE2="${RUN_XPOOL_STAGE2:-1}"
+DATASETS="${DATASETS:-lsmdc}"
 
-#     CANDIDATE_FILE=candidates/msrvtt_c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates_t1.json
-#     RESULT_FILE=msrvtt/c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates.csv
-#     XPOOL_CHECKPOINT="reranker/xpool/ckpt/msrvtt9k_model_best.pth"
+run_grdr_eval() {
+  local dataset="$1"
+  local num_latent_tokens="$2"
+  local code_num="$3"
+  local code_length="$4"
+  local batch_size="$5"
+  local num_candidates="$6"
+  local eval_checkpoint="$7"
+  local features_dataset_dir
+  features_dataset_dir=$(feature_dataset_dir "$dataset")
 
-#     conda activate xpool
-#     CUDA_VISIBLE_DEVICES="${DEVICE}" python reranker/xpool/test.py \
-#         --exp_name test \
-#         --batch_size 32 \
-#         --huggingface \
-#         --dataset_name MSRVTT \
-#         --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
-#         --msrvtt_train_file 9k \
-#         --eval_checkpoint "${XPOOL_CHECKPOINT}" \
-#         --rerank_mode \
-#         --candidate_file $CANDIDATE_FILE \
-#         --result_file $RESULT_FILE
-#     conda deactivate
-# done
+  require_file "$eval_checkpoint"
+  require_dir "$SEMANTIC_FEATURES_ROOT/InternVideo2/$features_dataset_dir"
 
-# # ACTNET
-# EVAL_CHECKPOINT="output/GRDR/actnet/best_model/best_model.pt"
-# CODE_BOOK_SIZE=128   
-# CODE_LENGTH=3        
-# BATCH_SIZE=32      
-# NUM_CANDIDATES=(100)
-# for num_candidates in "${NUM_CANDIDATES[@]}"; do
-#     conda activate semantictvr
-#     python run.py \
-#         --device "${DEVICE}" \
-#         --dataset actnet \
-#         --num_latent_tokens 4 \
-#         --code_num "${CODE_BOOK_SIZE}" \
-#         --max_length "${CODE_LENGTH}" \
-#         --eval_checkpoint "${EVAL_CHECKPOINT}" \
-#         --batch_size "${BATCH_SIZE}" \
-#         --num_candidates "${num_candidates}" \
-#         --setting 1 \
-#         --eval
-#     conda deactivate
+  activate_conda_env "$SEMANTICTVR_ENV"
+  run_cmd python run.py \
+    --device "$DEVICE" \
+    --dataset "$dataset" \
+    --features_root "$SEMANTIC_FEATURES_ROOT" \
+    --num_latent_tokens "$num_latent_tokens" \
+    --code_num "$code_num" \
+    --max_length "$code_length" \
+    --eval_checkpoint "$eval_checkpoint" \
+    --batch_size "$batch_size" \
+    --num_candidates "$num_candidates" \
+    --setting 1 \
+    --eval
+  deactivate_conda_env
+}
 
-#     CANDIDATE_FILE=candidates/actnet_c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates_t1.json
-#     RESULT_FILE=actnet/c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates.csv
-#     XPOOL_CHECKPOINT="reranker/xpool/ckpt/actnet_model_best.pth"
+run_xpool_eval() {
+  local dataset_name="$1"
+  local candidate_file="$2"
+  local result_file="$3"
+  local checkpoint="$4"
+  local videos_dir="$5"
+  shift 5
+  local extra_args=("$@")
 
-#     conda activate xpool
-#     CUDA_VISIBLE_DEVICES="${DEVICE}" python reranker/xpool/test.py \
-#         --exp_name test \
-#         --batch_size 32 \
-#         --huggingface \
-#         --dataset_name ACTNET \
-#         --videos_dir dataset/ActivityNet/Activity_Videos \
-#         --eval_checkpoint "${XPOOL_CHECKPOINT}" \
-#         --rerank_mode \
-#         --candidate_file $CANDIDATE_FILE \
-#         --result_file $RESULT_FILE
-#     conda deactivate
+  require_file "$candidate_file"
+  require_file "$checkpoint"
+  require_dir "$videos_dir"
 
-# done
+  activate_conda_env "$XPOOL_ENV"
+  run_cmd env CUDA_VISIBLE_DEVICES="$DEVICE" python reranker/xpool/test.py \
+    --exp_name test \
+    --batch_size 32 \
+    --huggingface \
+    --dataset_name "$dataset_name" \
+    "${extra_args[@]}" \
+    --eval_checkpoint "$checkpoint" \
+    --rerank_mode \
+    --candidate_file "$candidate_file" \
+    --result_file "$result_file"
+  deactivate_conda_env
+}
 
+for dataset in $DATASETS; do
+  case "$dataset" in
+    msrvtt)
+      num_latent_tokens=4
+      code_num=128
+      code_length=3
+      batch_size=1
+      num_candidates=100
+      eval_checkpoint="output/GRDR/msrvtt/best_model/best_model.pt"
+      candidate_file="candidates/msrvtt_c${code_num}l${code_length}_${num_candidates}_candidates_t1.json"
+      result_file="msrvtt/c${code_num}l${code_length}_${num_candidates}_candidates.csv"
+      xpool_checkpoint="reranker/xpool/ckpt/msrvtt9k_model_best.pth"
+      videos_dir="dataset/msrvtt_data/MSRVTT_Videos"
+      xpool_extra=(--msrvtt_train_file 9k --videos_dir "$videos_dir")
+      dataset_name="MSRVTT"
+      ;;
+    actnet)
+      num_latent_tokens=4
+      code_num=128
+      code_length=3
+      batch_size=32
+      num_candidates=100
+      eval_checkpoint="output/GRDR/actnet/best_model/best_model.pt"
+      candidate_file="candidates/actnet_c${code_num}l${code_length}_${num_candidates}_candidates_t1.json"
+      result_file="actnet/c${code_num}l${code_length}_${num_candidates}_candidates.csv"
+      xpool_checkpoint="reranker/xpool/ckpt/actnet_model_best.pth"
+      videos_dir="dataset/ActivityNet/Activity_Videos"
+      xpool_extra=(--videos_dir "$videos_dir")
+      dataset_name="ACTNET"
+      ;;
+    didemo)
+      num_latent_tokens=4
+      code_num=96
+      code_length=3
+      batch_size=32
+      num_candidates=100
+      eval_checkpoint="output/GRDR/didemo/best_model/best_model.pt"
+      candidate_file="candidates/didemo_c${code_num}l${code_length}_${num_candidates}_candidates_t1.json"
+      result_file="didemo/c${code_num}l${code_length}_${num_candidates}_candidates.csv"
+      xpool_checkpoint="reranker/xpool/ckpt/didemo_model_best.pth"
+      videos_dir="dataset/DiDeMo"
+      xpool_extra=(--videos_dir "$videos_dir")
+      dataset_name="DIDEMO"
+      ;;
+    lsmdc)
+      num_latent_tokens=1
+      code_num=200
+      code_length=3
+      batch_size=32
+      num_candidates=100
+      eval_checkpoint="output/GRDR/lsmdc/best_model/best_model.pt"
+      candidate_file="candidates/lsmdc_c${code_num}l${code_length}_${num_candidates}_candidates_t1.json"
+      result_file="lsmdc/c${code_num}l${code_length}_${num_candidates}_candidates.csv"
+      xpool_checkpoint="reranker/xpool/ckpt/lsmdc_model_best.pth"
+      videos_dir="dataset/LSMDC/LSMDC_Videos"
+      xpool_extra=(--videos_dir "$videos_dir")
+      dataset_name="LSMDC"
+      ;;
+    *)
+      echo "Unsupported dataset in DATASETS: $dataset" >&2
+      exit 1
+      ;;
+  esac
 
-# # DIDEMO
-# EVAL_CHECKPOINT="output/GRDR/didemo/best_model/best_model.pt"
-# CODE_BOOK_SIZE=96   
-# CODE_LENGTH=3        
-# BATCH_SIZE=32      
-# NUM_CANDIDATES=(100)
-# for num_candidates in "${NUM_CANDIDATES[@]}"; do
-#     conda activate semantictvr
-#     python run.py \
-#         --device "${DEVICE}" \
-#         --dataset didemo \
-#         --num_latent_tokens 4 \
-#         --code_num "${CODE_BOOK_SIZE}" \
-#         --max_length "${CODE_LENGTH}" \
-#         --eval_checkpoint "${EVAL_CHECKPOINT}" \
-#         --batch_size "${BATCH_SIZE}" \
-#         --num_candidates "${num_candidates}" \
-#         --setting 1 \
-#         --eval
-#     conda deactivate
+  if [[ "$RUN_GRDR_STAGE1" == "1" ]]; then
+    run_grdr_eval "$dataset" "$num_latent_tokens" "$code_num" "$code_length" "$batch_size" "$num_candidates" "$eval_checkpoint"
+  fi
 
-#     CANDIDATE_FILE=candidates/didemo_c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates_t1.json
-#     RESULT_FILE=didemo/c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates.csv
-#     XPOOL_CHECKPOINT="reranker/xpool/ckpt/didemo_model_best.pth"
-
-#     conda activate xpool
-#     CUDA_VISIBLE_DEVICES="${DEVICE}" python reranker/xpool/test.py \
-#         --exp_name test \
-#         --batch_size 32 \
-#         --huggingface \
-#         --dataset_name DIDEMO \
-#         --videos_dir dataset/DiDeMo \
-#         --eval_checkpoint "${XPOOL_CHECKPOINT}" \
-#         --rerank_mode \
-#         --candidate_file $CANDIDATE_FILE \
-#         --result_file $RESULT_FILE
-#     conda deactivate
-
-# done
-
-# LSMDC
-EVAL_CHECKPOINT="output/GRDR/lsmdc/best_model/best_model.pt"
-CODE_BOOK_SIZE=200   
-CODE_LENGTH=3        
-BATCH_SIZE=32      
-NUM_CANDIDATES=(100)
-for num_candidates in "${NUM_CANDIDATES[@]}"; do
-    # conda activate semantictvr
-    # python run.py \
-    #     --device "${DEVICE}" \
-    #     --dataset lsmdc \
-    #     --num_latent_tokens 1 \
-    #     --code_num "${CODE_BOOK_SIZE}" \
-    #     --max_length "${CODE_LENGTH}" \
-    #     --eval_checkpoint "${EVAL_CHECKPOINT}" \
-    #     --batch_size "${BATCH_SIZE}" \
-    #     --num_candidates "${num_candidates}" \
-    #     --setting 1 \
-    #     --eval
-    # conda deactivate
-
-    CANDIDATE_FILE=candidates/lsmdc_c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates_t1.json
-    RESULT_FILE=lsmdc/c${CODE_BOOK_SIZE}l${CODE_LENGTH}_${num_candidates}_candidates.csv
-    XPOOL_CHECKPOINT="reranker/xpool/ckpt/lsmdc_model_best.pth"
-
-    conda activate xpool
-    CUDA_VISIBLE_DEVICES="${DEVICE}" python reranker/xpool/test.py \
-        --exp_name test \
-        --batch_size 32 \
-        --huggingface \
-        --dataset_name LSMDC \
-        --videos_dir dataset/LSMDC/LSMDC_Videos \
-        --eval_checkpoint "${XPOOL_CHECKPOINT}" \
-        --rerank_mode \
-        --candidate_file $CANDIDATE_FILE \
-        --result_file $RESULT_FILE
-    conda deactivate
-
+  if [[ "$RUN_XPOOL_STAGE2" == "1" ]]; then
+    run_xpool_eval "$dataset_name" "$candidate_file" "$result_file" "$xpool_checkpoint" "$videos_dir" "${xpool_extra[@]}"
+  fi
 done
-
-

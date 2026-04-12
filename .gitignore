@@ -8,14 +8,18 @@ cache/*
 
 reranker/xpool/video_features_cache
 reranker/xpool/ckpt/
-
+/1.Guideline/
+/index/
 output
 graphify-out
+/tests/
 wandb
 logs
 data/*/none/
 output/baseline/
 candidates/baseline/
+candidates/*_ann_*_candidates_t*.json
+.claude/
 # ----------------------------------------------------------------------------
 # Python Runtime
 # ----------------------------------------------------------------------------

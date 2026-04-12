@@ -137,7 +137,7 @@ def parse_args():
                         choices=['msrvtt', 'didemo', 'actnet', 'activitynet'],
                         help="Dataset name")
     parser.add_argument("--features_root", type=str,
-                        default="./data_process/datasets/features",
+                        default="./dataset/features",
                         help="Path to features directory")
     parser.add_argument("--feature_extractor", type=str, default="InternVideo2",
                         choices=['CLIP', 'InternVL', 'InternVideo2'], help="feature extractor type")

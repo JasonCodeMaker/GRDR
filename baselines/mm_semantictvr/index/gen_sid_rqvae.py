@@ -28,7 +28,7 @@ def parse_args():
                         choices=['msrvtt', 'didemo', 'actnet', 'activitynet', 'lsmdc'],
                         help="Dataset name")
     parser.add_argument("--features_root", type=str,
-                        default="./data_process/datasets/features",
+                        default="./dataset/features",
                         help="Path to features directory")
     parser.add_argument("--split", type=str, default="train",
                         choices=['train', 'test'],

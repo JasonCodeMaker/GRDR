@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--features_root",
         type=str,
-        default="./data_process/datasets/features",
+        default="./dataset/features",
         help="Path to features directory",
     )
     parser.add_argument("--split", type=str, default="train", choices=["train", "test"])
