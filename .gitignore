@@ -8,13 +8,19 @@ cache/*
 
 reranker/xpool/video_features_cache
 reranker/xpool/ckpt/
-/1.Guideline/
+research/
+var/   
 /index/
 output
 graphify-out
-/tests/
 wandb
 logs
+var/*
+!var/.gitkeep
+!var/research/
+var/research/*
+!var/research/.gitkeep
+.test_artifacts/
 data/*/none/
 output/baseline/
 candidates/baseline/
