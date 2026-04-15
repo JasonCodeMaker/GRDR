@@ -131,6 +131,17 @@ python run.py --dataset msrvtt --model_name t5-small --code_num 128 --max_length
 
 See `scripts/train.sh` for full training configurations.
 
+## Research Workflow
+
+Research outputs are now governed by a fixed package layout instead of ad hoc top-level folders.
+
+- Create a new research package with `bash scripts/dev/new_research.sh <slug>`
+- Write all in-repo research docs under `research/active/<YYYY-MM-DD>-<slug>/`
+- Move finished or paused work to `research/archive/<YYYY-MM-DD>-<slug>/`
+- Write runtime state, supervisor JSON, local logs, and scratch CSVs under `var/research/<YYYY-MM-DD>-<slug>/`
+
+The canonical policy and package templates live under [`research/`](research/).
+
 ## Results
 
 ### Inductive Setting
@@ -157,20 +168,24 @@ The search pool contains both training and test videos, reflecting real-world de
 
 ```
 GRDR/
-├── run.py                    # Main training/evaluation entry
-├── download_features.py      # HuggingFace downloader
-├── models/
-│   ├── grdr.py              # Core GRDR model
-│   └── video_rqvae/         # Multi-view video tokenizer
-├── trainer/
-│   ├── trainer.py           # Training logic
-│   └── evaluator.py         # Evaluation metrics
-├── reranker/xpool/          # Dense reranking module
-├── data/                    # Dataset annotations
-└── scripts/                 # Training & evaluation scripts
-    ├── train.sh
-    ├── eval_t1.sh
-    └── eval_t2.sh
+├── run.py                        # Main training/evaluation entry
+├── download_features.py          # HuggingFace downloader
+├── models/                       # Core GRDR model and tokenizer code
+├── trainer/                      # Training and evaluation logic
+├── reranker/xpool/               # Dense reranking module
+├── data/                         # Dataset annotations
+├── research/
+│   ├── active/                   # Ongoing research packages
+│   ├── archive/                  # Archived research packages
+│   ├── templates/                # Standard package skeleton
+│   └── README.md                 # Research layout contract
+├── scripts/
+│   ├── train.sh                  # Stable training entry
+│   ├── eval_t1.sh                # Stable inductive evaluation entry
+│   ├── eval_t2.sh                # Stable full-corpus evaluation entry
+│   ├── dev/new_research.sh       # Research package scaffold
+│   └── ops/                      # Bunya and Panda-70M ops scripts
+└── var/                          # Gitignored local research state
 ```
 
 ## Citation

@@ -14,6 +14,15 @@ Before proposing or extending any new research idea, run a self-review first.
 - Critically review the idea for weak assumptions, overclaimed conclusions, and likely reviewer attacks
 - Run a novelty check before turning the idea into an experiment or paper claim
 
+## Research Output Contract
+
+- The only valid in-repo location for new research material is `research/active/<YYYY-MM-DD>-<slug>/`.
+- Every research package must contain `README.md`, `PLAN.md`, `TRACKER.md`, `RESULTS.md`, plus `docs/` and `scripts/`.
+- Use `bash scripts/dev/new_research.sh <slug>` to create research packages; do not create ad hoc top-level research folders outside `research/`.
+- Runtime state, supervisor JSON, local logs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
+- When a research theme is complete or paused, move the whole package to `research/archive/<YYYY-MM-DD>-<slug>/`.
+- Stable shared entrypoints stay in `scripts/`; one-off experiment scripts belong in the owning research package.
+
 ## Runtime Ops
 
 - Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.

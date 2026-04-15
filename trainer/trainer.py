@@ -310,7 +310,7 @@ def train(config, global_step=0):
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
     dataset_name = config.get('dataset', 'msrvtt')
-    features_root = config.get('features_root', './dataset/features')
+    features_root = config.get('features_root', './data_process/datasets/features')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
 
     accelerator.print(f'Loading features for {dataset_name}...')

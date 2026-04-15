@@ -572,7 +572,7 @@ def test(config):
     epochs = config.get('epochs', 1)
 
     dataset_name = config.get('dataset', 'msrvtt')
-    features_root = config.get('features_root', './dataset/features')
+    features_root = config.get('features_root', './data_process/datasets/features')
     num_latent_tokens = config.get('num_latent_tokens', 4)
     cache_dir = config.get('cache_dir', './cache')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
@@ -1028,7 +1028,7 @@ def norm_code_by_prefix(collection, centroids, prefix, epsilon=1):
 def do_epoch_encode(model: GRDR, train_dataset: VideoTextDataset,
                     video_codes: dict, tokenizer, batch_size, save_path, epoch, n_code,
                     code_length=1,
-                    dataset_name='msrvtt', features_root='./dataset/features'):
+                    dataset_name='msrvtt', features_root='./data_process/datasets/features'):
     """Encode video-text samples for an epoch and run k-means."""
     from utils.data_utils import write_pkl
 
@@ -1087,7 +1087,7 @@ def test_dr(config, checkpoint):
         batch_size = 128
 
     dataset_name = config.get('dataset', 'msrvtt')
-    features_root = config.get('features_root', './dataset/features')
+    features_root = config.get('features_root', './data_process/datasets/features')
 
     print('DR evaluation for VideoTextDataset', f'{save_path}')
 
