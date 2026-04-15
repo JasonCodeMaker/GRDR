@@ -7,6 +7,14 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage text-to-video retrieva
 - Targets: MSR-VTT, ActivityNet, DiDeMo, LSMDC
 - Conda env: check `wandb/` requirements or `run.py` header
 
+## Research Output Contract
+
+- Create new research packages with `bash scripts/dev/new_research.sh <slug>`.
+- Keep tracked research docs under `research/active/<YYYY-MM-DD>-<slug>/` and archive them under `research/archive/<YYYY-MM-DD>-<slug>/`.
+- Keep runtime state, local logs, supervisor JSON, and temporary analysis artifacts under `var/research/<YYYY-MM-DD>-<slug>/`.
+- Do not add new top-level research directories outside `research/`.
+- Keep `scripts/` root limited to stable shared entrypoints; one-off experiment scripts belong in the owning research package.
+
 ## graphify
 
 A knowledge graph of this codebase lives in `graphify-out/`. It is rebuilt automatically when code changes.
