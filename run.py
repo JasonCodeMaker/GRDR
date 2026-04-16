@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from models.grdr import GRDR, Codebook, QuantizeOutput, VideoOutput
 from trainer.trainer import OurTrainer, train, build_loss_weights
-from trainer.evaluator import test, test_dr, eval_retrieval
+from trainer.evaluator import test
 from utils.model_utils import seed_everything
 
 
@@ -50,7 +50,7 @@ def parse_args():
     parser.add_argument('--w2_rq_loss', type=float, default=0.3, help='Phase 2 RQ quantization loss weight')
 
     # Loss weights - Phase 2 (Optional): Fit phase
-    parser.add_argument('--enable_fit', action='store_true', default=True, help='Enable fit phase')
+    parser.add_argument('--enable_fit', action=argparse.BooleanOptionalAction, default=True, help='Enable fit phase')
     parser.add_argument('--w3_cl_loss', type=float, default=0, help='Phase fit contrastive loss weight')
     parser.add_argument('--w3_ce_loss', type=float, default=1, help='Phase fit cross-entropy loss weight')
     parser.add_argument('--w3_code_loss', type=float, default=1, help='Phase fit code prediction loss weight')
@@ -84,6 +84,11 @@ def parse_args():
     parser.add_argument('--save_path', type=str, default='output/GRDR')
     parser.add_argument('--exp_name', type=str, default='debug', help='Experiment name for wandb and save path')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for decayed parameter groups')
+    parser.add_argument('--encoder_lr_scale_base', type=float, default=1.0,
+                       help='Per-loop decay base for VideoRQVAE encoder LR scale')
+    parser.add_argument('--last_codebook_lr_scale', type=float, default=10.0,
+                       help='Learning rate multiplier for the newest codebook layer')
     parser.add_argument('--device', type=int, default=0, choices=[0, 1],
                        help='GPU device ID to use for training (0 or 1)')
     parser.add_argument('--use_pseudo_queries', action='store_true', default=False,
@@ -129,16 +134,14 @@ def main():
             config['code_length'] = loop + 1
             config['prev_model'] = checkpoint
             config['prev_id'] = f'{checkpoint}.code' if checkpoint is not None else None
-            config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
+            config['epochs'] = args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
             checkpoint, global_step = train(config, global_step)
-            test_dr(config, checkpoint)
 
             # Phase 2: Main Training
             config['save_path'] = os.path.join(save_root, f'model-{loop + 1}')
             config['prev_model'] = checkpoint
-            config['codebook_init'] = f'{checkpoint}.kmeans.{args.code_num}'
             config['epochs'] = args.main_epochs
             config['loss_w'] = 2
             config['lr'] = args.main_lr
@@ -146,7 +149,6 @@ def main():
             if args.enable_fit:
                 config['save_path'] = os.path.join(save_root, f'model-{loop+1}-fit')
                 config['prev_model'] = checkpoint
-                config['codebook_init'] = None
                 config['epochs'] = args.fit_epochs
                 config['loss_w'] = 3
                 config['lr'] = args.fit_lr

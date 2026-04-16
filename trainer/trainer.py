@@ -4,9 +4,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torch.distributed as dist
 import wandb
-from torch import Tensor
 from tqdm import tqdm
 from accelerate import Accelerator
 from transformers import AutoTokenizer, get_constant_schedule
@@ -25,21 +23,8 @@ class OurTrainer:
     """Trainer class with static methods for training and testing steps."""
 
     @staticmethod
-    def _gather_tensor(t: Tensor, local_rank):
-        all_tensors = [torch.empty_like(t) for _ in range(dist.get_world_size())]
-        dist.all_gather(all_tensors, t)
-        all_tensors[local_rank] = t
-        return all_tensors
-
-    @staticmethod
-    def gather_tensors(t: Tensor, local_rank=None):
-        if local_rank is None:
-            local_rank = dist.get_rank()
-        return torch.cat(OurTrainer._gather_tensor(t, local_rank))
-
-    @staticmethod
     @torch.no_grad()
-    def test_step(model: GRDR, batch, use_constraint=None):
+    def test_step(model: GRDR, batch):
         """
         Test step compatible with VideoTextDataset batch structure.
 
@@ -54,8 +39,7 @@ class OurTrainer:
             input_ids=batch['caption_tokens'],
             attention_mask=batch['attention_mask'],
             return_code=False,
-            return_quantized_embedding=False,
-            use_constraint=use_constraint
+            return_quantized_embedding=False
         )
 
         # Video path: video features -> VideoRQVAE with token selection
@@ -63,14 +47,13 @@ class OurTrainer:
             video_features=batch['video_features'],
             token_idx=batch['token_idx'],
             return_code=False,
-            return_quantized_embedding=False,
-            use_constraint=use_constraint
+            return_quantized_embedding=False
         )
 
         return query_outputs, vid_outputs
 
     @staticmethod
-    def simple_train_step(model: GRDR, batch, gathered=None):
+    def simple_train_step(model: GRDR, batch):
         """
         Simple train step compatible with VideoTextDataset batch structure.
         Uses only commitment loss on query probability.
@@ -97,7 +80,7 @@ class OurTrainer:
         )
 
     @staticmethod
-    def train_step(model: GRDR, batch, current_layer, gathered=None):
+    def train_step(model: GRDR, batch, current_layer):
         """
         Train step compatible with VideoTextDataset batch structure.
 
@@ -117,7 +100,7 @@ class OurTrainer:
             aux_ids=batch['aux_ids'],
             return_code=True,
             return_quantized_embedding=True,
-            return_residual_layer= model.code_length if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.module.code_length - 1
+            return_residual_layer=model.code_length
         )
 
         # Query path: text caption -> T5 encoder
@@ -138,11 +121,8 @@ class OurTrainer:
         query_prob = query_outputs.probability
         vid_prob = vid_outputs.probability
 
-        if gathered is None:
-            gathered = dist.is_initialized()
-
         # Contrastive loss: query vs doc
-        cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds, gathered=False)
+        cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds)
 
         # Video Reconstruction Loss
         L2_video_features = F.normalize(video_features.detach(), p=2, dim=-1, eps=1e-12)
@@ -157,10 +137,7 @@ class OurTrainer:
         # Code prediction loss (multi-layer)
         code_loss = 0
         if query_outputs.code_logits is not None and vid_outputs.code_logits is not None:
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                code_number = model.module.code_number
-            else:
-                code_number = model.code_number
+            code_number = model.code_number
 
             prior_codes = batch['ids'][:, 1:].contiguous().view(-1)
             query_code_loss = F.cross_entropy(
@@ -188,16 +165,10 @@ class OurTrainer:
         )
 
     @staticmethod
-    def compute_contrastive_loss(query_embeds, vid_embeds, gathered=True):
-        if gathered:
-            gathered_query_embeds = OurTrainer.gather_tensors(query_embeds)
-            gathered_doc_embeds = OurTrainer.gather_tensors(vid_embeds)
-        else:
-            gathered_query_embeds = query_embeds
-            gathered_doc_embeds = vid_embeds
-        effective_bsz = gathered_query_embeds.size(0)
+    def compute_contrastive_loss(query_embeds, vid_embeds):
+        effective_bsz = query_embeds.size(0)
         labels = torch.arange(effective_bsz, dtype=torch.long, device=query_embeds.device)
-        similarities = torch.matmul(gathered_query_embeds, gathered_doc_embeds.transpose(0, 1))
+        similarities = torch.matmul(query_embeds, vid_embeds.transpose(0, 1))
         co_loss = F.cross_entropy(similarities, labels)
         return co_loss
 
@@ -274,7 +245,7 @@ def train(config, global_step=0):
                                                     torch_dtype=torch_dtype,
                                                     config=t5_config)
     model = GRDR(model=t5, code_length=code_length,
-                 use_constraint=False, sk_epsilon=1, zero_inp=False, code_number=code_num,
+                 zero_inp=False, code_number=code_num,
                  videorqvae=videorqvae)
 
     if prev_model is not None:
@@ -291,10 +262,6 @@ def train(config, global_step=0):
     # Print total model parameters in millions
     total_params = sum(p.numel() for p in model.parameters())
     accelerator.print(f'Total model parameters: {total_params / 1e6:.2f}M')
-
-    if config.get('codebook_init', None) is not None:
-        from run import read_pkl
-        model.code_embedding[-1].weight.data = torch.tensor(read_pkl(config.get('codebook_init')))
 
     # Phase-specific freezing:
     if config.get('loss_w') == 3:
@@ -396,11 +363,19 @@ def train(config, global_step=0):
     )
     # Calculate encoder LR scale based on loop index
     loop = config.get('loop', 0)
-    encoder_lr_scale = 1.0 ** loop
+    encoder_lr_scale_base = config.get('encoder_lr_scale_base', 1.0)
+    encoder_lr_scale = encoder_lr_scale_base ** loop
     accelerator.print(f'Loop {loop}: Encoder LR scale = {encoder_lr_scale:.4f} (base_lr={lr}, encoder_lr={lr * encoder_lr_scale:.2e})')
 
     # Use get_optimizer to apply custom learning rates
-    optimizer = get_optimizer(model, lr=lr, code_length=code_length, encoder_lr_scale=encoder_lr_scale)
+    optimizer = get_optimizer(
+        model,
+        lr=lr,
+        code_length=code_length,
+        encoder_lr_scale=encoder_lr_scale,
+        weight_decay=config.get('weight_decay', 0.0),
+        last_codebook_lr_scale=config.get('last_codebook_lr_scale', 10.0),
+    )
     model, optimizer, data_loader = accelerator.prepare(model, optimizer, data_loader)
     scheduler = get_constant_schedule(optimizer)
 
@@ -431,7 +406,7 @@ def train(config, global_step=0):
             step += 1
             global_step += 1
             with accelerator.accumulate(model):
-                losses = OurTrainer.train_step(model, batch, current_layer=loop, gathered=False)
+                losses = OurTrainer.train_step(model, batch, current_layer=loop)
                 loss = sum([v * loss_w[k] for k, v in losses.items()])
                 accelerator.backward(loss)
                 accelerator.clip_grad_norm_(model.parameters(), 1.)
