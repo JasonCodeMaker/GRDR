@@ -8,7 +8,11 @@ cache/*
 
 reranker/xpool/video_features_cache
 reranker/xpool/ckpt/
-research/
+research/*
+!research/active/
+research/active/*
+!research/active/2026-04-15-msrvtt-tokenizer-health/
+!research/active/2026-04-15-msrvtt-tokenizer-health/**
 var/   
 /index/
 output

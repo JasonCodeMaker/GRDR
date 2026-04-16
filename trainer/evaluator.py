@@ -120,7 +120,6 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
                 token_idx=batch['token_idx'],
                 return_code=False,
                 return_quantized_embedding=False,
-                use_constraint=False,
                 return_residual_layer=residual_layer,
                 return_all=return_all
             )
@@ -137,8 +136,7 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
                 decoder_input_ids=batch['ids'],
                 aux_ids=batch.get('aux_ids'),
                 return_code=False,
-                return_quantized_embedding=False,
-                use_constraint=False
+                return_quantized_embedding=False
             )
             query_emb = query_output.total_embeds.cpu().numpy()
             query_codes = query_output.probability.argmax(-1).cpu().tolist()
@@ -611,7 +609,7 @@ def test(config):
     t5 = T5ForConditionalGeneration.from_pretrained(model_name,
                                                     torch_dtype=torch_dtype,
                                                     config=t5_config)
-    model = GRDR(model=t5, use_constraint=False, code_length=code_length, zero_inp=False,
+    model = GRDR(model=t5, code_length=code_length, zero_inp=False,
                  code_number=code_num, videorqvae=videorqvae)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -1114,7 +1112,7 @@ def test_dr(config, checkpoint):
     )
 
     t5 = T5ForConditionalGeneration.from_pretrained(model_name, torch_dtype=torch_dtype, config=t5_config)
-    model = GRDR(model=t5, use_constraint=False, code_length=code_length, zero_inp=False,
+    model = GRDR(model=t5, code_length=code_length, zero_inp=False,
                  code_number=code_num, videorqvae=videorqvae)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = model.cuda()
