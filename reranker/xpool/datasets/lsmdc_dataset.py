@@ -14,6 +14,7 @@ from modules.basic_utils import load_json
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 
 
 class LSMDCDataset(Dataset):
@@ -43,9 +44,9 @@ class LSMDCDataset(Dataset):
 
     def __getitem__(self, index):
         video_path, caption, video_id = self._get_vidpath_and_caption_by_index(index)
-        imgs, idxs = VideoCapture.load_frames_from_video(video_path, 
-                                                         self.config.num_frames, 
-                                                         self.config.video_sample_type)
+        imgs, idxs = VideoCapture.load_frames(video_path,
+                                              self.config.num_frames,
+                                              self.config.video_sample_type)
 
         # process images of video
         if self.img_transforms is not None:
@@ -66,8 +67,7 @@ class LSMDCDataset(Dataset):
         # returns video path and caption as string
         clip_id = list(self.clip2caption.keys())[index]
         caption = self.clip2caption[clip_id]
-        clip_prefix = clip_id.split('.')[0][:-3]
-        video_path = os.path.join(self.videos_dir, clip_prefix, clip_id + '.avi')
+        video_path = resolve_media_path(self.config.dataset_name, self.videos_dir, clip_id)
 
         return video_path, caption, clip_id
 

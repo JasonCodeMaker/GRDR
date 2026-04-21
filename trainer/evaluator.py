@@ -241,6 +241,15 @@ def build_sid_to_videos_mapping(sample_codes_dict):
     return dict(sid_to_videos)
 
 
+def strip_video_suffix(video_id):
+    """Normalize caption-suffixed sample ids back to base video ids."""
+    if '_' in video_id:
+        parts = video_id.rsplit('_', 1)
+        if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) <= 2:
+            return parts[0]
+    return video_id
+
+
 @torch.no_grad()
 def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_path):
     """Save hierarchical codes for training samples."""
@@ -269,7 +278,7 @@ def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_pat
 
 @torch.no_grad()
 def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step=0,
-                   is_pretrain=False, code_length=4, drift_monitor=None):
+                   is_pretrain=False, code_length=4, drift_monitor=None, selection_num_candidates=10, setting=1):
     """Evaluate Dense Retrieval on test set. Also evaluates sID Retrieval when not in pretrain phase."""
     # Import Tree here to avoid circular import
     from utils.model_utils import Tree
@@ -319,6 +328,7 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
     if not is_pretrain:
         accelerator.print('Evaluating sID Retrieval on test set...')
+        selection_num_candidates = max(1, selection_num_candidates)
 
         unique_train_sids = {str(code) for token_codes in train_sample_codes_dict.values() for code in token_codes}
         accelerator.print(f'Unique train sID count: {len(unique_train_sids)}')
@@ -428,8 +438,16 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
             gt_sid_strs = [str([0, *code]) for code in gt_sids]
             query_labels.append(gt_sid_strs)
 
+        test_corpus_codes = {}
+        candidate_pools = [sample_codes_dict] if setting == 1 else [train_sample_codes_dict, sample_codes_dict]
+        for candidate_pool in candidate_pools:
+            for video_id, token_codes in candidate_pool.items():
+                base_video_id = strip_video_suffix(video_id)
+                if base_video_id not in test_corpus_codes:
+                    test_corpus_codes[base_video_id] = token_codes
+
         corpus_ids = []
-        for token_codes in sample_codes_dict.values():
+        for token_codes in test_corpus_codes.values():
             for code in token_codes:
                 corpus_ids.append([0, *code])
         tree = Tree()
@@ -437,23 +455,23 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
         tk0 = tqdm(test_data_loader, total=len(test_data_loader), desc='sID Retrieval')
         output_all = []
+        test_top_k = max(10, selection_num_candidates)
         with torch.no_grad():
             for batch in tk0:
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()
                          if isinstance(v, torch.Tensor)}
-                top_k = 10
                 output = unwrap_model.generate(
                     input_ids=batch['caption_tokens'],
                     attention_mask=batch['attention_mask'],
                     max_length=code_length + 1,
-                    num_beams=top_k,
-                    num_return_sequences=top_k,
+                    num_beams=test_top_k,
+                    num_return_sequences=test_top_k,
                     prefix_allowed_tokens_fn=tree
                 )
                 beam = []
                 new_output = []
                 for line in output:
-                    if len(beam) >= top_k:
+                    if len(beam) >= test_top_k:
                         new_output.append(beam)
                         beam = []
                     beam.append(line.cpu().tolist())
@@ -474,17 +492,21 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
             predictions.append(sid_list)
 
         sid_results = eval_all(predictions, query_labels)
+        selection_metric = eval_recall(predictions, query_labels, at=selection_num_candidates)[f'R@{selection_num_candidates}'] * 100
         accelerator.print('sID Retrieval:', sid_results)
+        accelerator.print(f'Selection metric Recall@{selection_num_candidates}: {selection_metric:.4f}')
 
         if accelerator.is_main_process:
             wandb.log({f"eval/sID_R@{k}": v for k, v in sid_results.items()}, step=global_step)
+            if selection_num_candidates not in (1, 5, 10):
+                wandb.log({f"eval/sID_R@{selection_num_candidates}": selection_metric}, step=global_step)
 
         results.update({f"sID_{k}": v for k, v in sid_results.items()})
 
     if is_pretrain:
         overall_metric = sum(results.values())
     else:
-        overall_metric = sum(sid_results.values())
+        overall_metric = selection_metric
 
     return results, overall_metric
 
@@ -842,13 +864,6 @@ def test(config):
                         ranked_videos.append(video_id)
                         ranked_videos_with_sid.append([code_str, video_id])
                         ranked_scores.append(score)
-
-        def strip_video_suffix(video_id):
-            if '_' in video_id:
-                parts = video_id.rsplit('_', 1)
-                if len(parts) == 2 and parts[1].isdigit() and len(parts[1]) <= 2:
-                    return parts[0]
-            return video_id
 
         cleaned_gt_video_id = strip_video_suffix(gt_video_id)
         cleaned_ranked_videos = ranked_videos

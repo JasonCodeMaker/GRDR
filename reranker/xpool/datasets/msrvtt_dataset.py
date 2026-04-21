@@ -14,6 +14,7 @@ from modules.basic_utils import load_json
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 
 
 class MSRVTTDataset(Dataset):
@@ -50,9 +51,9 @@ class MSRVTTDataset(Dataset):
             
     def __getitem__(self, index):
         video_path, caption, video_id = self._get_vidpath_and_caption_by_index(index)
-        imgs, idxs = VideoCapture.load_frames_from_video(video_path, 
-                                                         self.config.num_frames, 
-                                                         self.config.video_sample_type)
+        imgs, idxs = VideoCapture.load_frames(video_path,
+                                              self.config.num_frames,
+                                              self.config.video_sample_type)
 
         # process images of video
         if self.img_transforms is not None:
@@ -75,11 +76,11 @@ class MSRVTTDataset(Dataset):
         # returns video path and caption as string
         if self.split_type == 'train':
             vid, caption = self.all_train_pairs[index]
-            video_path = os.path.join(self.videos_dir, vid + '.mp4')
         else:
             vid = self.test_df.iloc[index].video_id
-            video_path = os.path.join(self.videos_dir, vid + '.mp4')
             caption = self.test_df.iloc[index].sentence
+
+        video_path = resolve_media_path(self.config.dataset_name, self.videos_dir, vid)
 
         return video_path, caption, vid
 

@@ -10,11 +10,13 @@ import torch
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 
 
-def default_path_fn(videos_dir, vid, video_ext):
+def default_path_fn(config, videos_dir, vid, video_ext, split_type):
     """Default path builder: simple concatenation."""
-    return os.path.join(videos_dir, vid + video_ext)
+    video_id = vid if not video_ext or vid.endswith(video_ext) else vid + video_ext
+    return resolve_media_path(config.dataset_name, videos_dir, video_id, split_type=split_type)
 
 
 class VideoOnlyDataset(Dataset):
@@ -26,7 +28,8 @@ class VideoOnlyDataset(Dataset):
     """
 
     def __init__(self, config: Config, video_ids: list, videos_dir: str,
-                 img_transforms=None, video_ext: str = '.mp4', path_fn=None):
+                 img_transforms=None, video_ext: str = '.mp4', path_fn=None,
+                 split_type: str = 'train'):
         """
         Args:
             config: Configuration object with num_frames, video_sample_type
@@ -43,12 +46,13 @@ class VideoOnlyDataset(Dataset):
         self.img_transforms = img_transforms
         self.video_ext = video_ext
         self.path_fn = path_fn if path_fn is not None else default_path_fn
+        self.split_type = split_type
 
     def __getitem__(self, index):
         vid = self.video_ids[index]
-        video_path = self.path_fn(self.videos_dir, vid, self.video_ext)
+        video_path = self.path_fn(self.config, self.videos_dir, vid, self.video_ext, self.split_type)
 
-        imgs, _ = VideoCapture.load_frames_from_video(
+        imgs, _ = VideoCapture.load_frames(
             video_path,
             self.config.num_frames,
             self.config.video_sample_type

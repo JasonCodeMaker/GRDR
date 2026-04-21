@@ -8,6 +8,7 @@ from collections import defaultdict
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 from modules.basic_utils import load_json
 
 
@@ -26,12 +27,9 @@ class DiDeMoDataset(Dataset):
         self.img_transforms = img_transforms
         self.split_type = split_type
 
-        # Set up split-specific video directory
         if split_type == 'train':
-            self.video_root = os.path.join(config.videos_dir, 'train', 'videos')
             anno_file = 'reranker/xpool/data/DIDEMO/didemo_ret_train.json'
         else:
-            self.video_root = os.path.join(config.videos_dir, 'test', 'test_videos')
             anno_file = 'reranker/xpool/data/DIDEMO/didemo_ret_test.json'
 
         self.annotations = load_json(anno_file)
@@ -47,7 +45,7 @@ class DiDeMoDataset(Dataset):
 
     def __getitem__(self, index):
         video_path, caption, video_id = self._get_vidpath_and_caption_by_index(index)
-        imgs, idxs = VideoCapture.load_frames_from_video(
+        imgs, idxs = VideoCapture.load_frames(
             video_path,
             self.config.num_frames,
             self.config.video_sample_type
@@ -69,8 +67,12 @@ class DiDeMoDataset(Dataset):
     def _get_vidpath_and_caption_by_index(self, index):
         """Get video path and caption for the given index."""
         vid, caption = self.all_pairs[index]
-        # video_id already includes .mp4 suffix in annotation
-        video_path = os.path.join(self.video_root, vid)
+        video_path = resolve_media_path(
+            self.config.dataset_name,
+            self.config.videos_dir,
+            vid,
+            split_type=self.split_type,
+        )
         # Remove .mp4 suffix for video_id used in evaluation
         video_id = vid.replace('.mp4', '')
         return video_path, caption, video_id
@@ -89,14 +91,14 @@ class DiDeMoDataset(Dataset):
     def _construct_all_pairs(self, split_type):
         """Construct all (video_id, caption) pairs for iteration."""
         self.all_pairs = []
-        if split_type == 'train':
-            for vid, captions in self.vid2caption.items():
-                for caption in captions:
-                    self.all_pairs.append([vid, caption])
-        else:
-            for vid, captions in self.vid2caption.items():
-                # Concatenate all captions as one string, separated by a space
-                concat_caption = " ".join([cap.strip() if isinstance(cap, str) else str(cap) for cap in captions])
+        for vid, captions in self.vid2caption.items():
+            if split_type == 'train':
+                for cap in captions:
+                    self.all_pairs.append([vid, cap])
+            else:
+                concat_caption = " ".join(
+                    [cap.strip() if isinstance(cap, str) else str(cap) for cap in captions]
+                )
                 self.all_pairs.append([vid, concat_caption])
 
     def _generate_candidate_mask(self, candidate_file, extra_vid_ids=None):

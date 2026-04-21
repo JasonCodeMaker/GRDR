@@ -74,7 +74,7 @@ def parse_args():
     parser.add_argument('--eval_checkpoint', type=str,
                         default="output/GRDR/msrvtt/current_best/model-3-fit/best_model.pt",
                         help='Checkpoint path for evaluation')
-    parser.add_argument('--num_candidates', type=int, default=10,
+    parser.add_argument('--num_candidates', type=int, default=50,
                        help='Number of top candidates to retrieve per query for JSON export')
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                        help='Setting: 1=test only pool, 2=train+test combined pool')
