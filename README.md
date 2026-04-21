@@ -1,4 +1,4 @@
-# GRDR: Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval
+# GRDR: A Semantic-ID Index and Recall-Rerank Query Engine for Scalable Text-to-Video Retrieval
 
 [![arXiv](https://img.shields.io/badge/arXiv-2601.21193-b31b1b.svg)](https://arxiv.org/abs/2601.21193)
 [![HuggingFace](https://img.shields.io/badge/HuggingFace-GRDR--TVR-yellow)](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR)
@@ -8,14 +8,16 @@
   <img src="assets/framework.png" width="90%">
 </p>
 
-Official implementation of **"Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval"** (Submitted to SIGIR 2026).
+Official implementation of **"GRDR: A Semantic-ID Index and Recall-Rerank Query Engine for Scalable Text-to-Video Retrieval"**.
 
 ## Overview
 
-GRDR achieves **300x speedup** in retrieval latency and **42x storage reduction** compared to dense retrieval baselines while maintaining competitive accuracy.
+GRDR targets repository-scale text-to-video retrieval, where the main systems bottleneck is the stage-1 candidate generator rather than the stage-2 reranker. The project goal is to build a stage-1 index that keeps storage and query-time cost tractable while preserving enough recall for a strong dense matcher downstream.
 
-- **Multi-View Video Tokenizer**: Addresses semantic ambiguity by learning diverse video representations through residual quantization
-- **Unified Co-Training**: Resolves cross-modal misalignment by jointly optimizing the tokenizer and generative retrieval model
+- **Why dense stage 1 is not enough**: cached video embeddings and exhaustive query-time scoring both grow with corpus size.
+- **Why prior generative retrieval is not enough**: a single semantic ID per video under-covers polysemous content, and video-only key assignment makes text queries harder to decode into the right IDs.
+- **What GRDR does**: learns a multi-view semantic-ID index with shared-vocabulary co-training, uses prefix-constrained decoding over valid trie paths to recall a compact candidate set, then applies X-Pool reranking for fine-grained matching.
+- **Practical target**: competitive quality with much lower storage and latency than dense stage-1 retrieval, especially under full-corpus serving.
 
 ## Installation
 

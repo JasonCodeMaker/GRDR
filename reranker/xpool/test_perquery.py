@@ -14,6 +14,64 @@ from trainer.evaluator import PerQueryEvaluator
 import argparse
 
 
+def summarize_timing_stats(timing_stats):
+    """Return mean/std/min/max timing stats in seconds for each timing key."""
+    summary = {}
+    for key, values in timing_stats.items():
+        if not values:
+            continue
+        arr = np.asarray(values, dtype=np.float64)
+        summary[key] = {
+            'mean_s': float(arr.mean()),
+            'std_s': float(arr.std()),
+            'min_s': float(arr.min()),
+            'max_s': float(arr.max()),
+        }
+    return summary
+
+
+def build_summary_row(config, custom_args, evaluator, metrics, timing_summary, candidates_file):
+    """Build one structured summary row with metrics and timing breakdowns."""
+    candidate_counts = [len(v) for v in evaluator.query_candidates.values()]
+    row = {
+        'dataset': config.dataset_name.lower(),
+        'retrieval_mode': 'candidates' if candidates_file else (
+            'expanded_pool' if custom_args.expanded_pool else 'full_test_pool'
+        ),
+        'candidate_file': candidates_file or '',
+        'cache_dir': custom_args.cache_dir or '',
+        'num_frames': config.num_frames,
+        'num_queries': evaluator.query_count,
+        'search_pool_size': len(evaluator.video_ids),
+        'candidate_count_mean': float(np.mean(candidate_counts)) if candidate_counts else '',
+        'candidate_count_min': int(np.min(candidate_counts)) if candidate_counts else '',
+        'candidate_count_max': int(np.max(candidate_counts)) if candidate_counts else '',
+        'R@1': float(metrics['R1']),
+        'R@5': float(metrics['R5']),
+        'R@10': float(metrics['R10']),
+        'R@50': float(metrics['R50']),
+        'R@100': float(metrics['R100']),
+        'MedR': float(metrics['MedR']),
+        'MeanR': float(metrics['MeanR']),
+    }
+    for key in ('query_encode', 'video_load', 'frame_pooling', 'similarity_compute', 'total'):
+        stats = timing_summary.get(key)
+        row[f'{key}_ms_mean'] = float(stats['mean_s'] * 1000.0) if stats else ''
+        row[f'{key}_ms_std'] = float(stats['std_s'] * 1000.0) if stats else ''
+        row[f'{key}_ms_min'] = float(stats['min_s'] * 1000.0) if stats else ''
+        row[f'{key}_ms_max'] = float(stats['max_s'] * 1000.0) if stats else ''
+    return row
+
+
+def write_summary_csv(path, row):
+    """Write one-row CSV summary."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, 'w', newline='') as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=list(row.keys()))
+        writer.writeheader()
+        writer.writerow(row)
+
+
 def load_test_queries(config):
     """
     Load test queries and ground truth video IDs from the test dataset.
@@ -72,6 +130,20 @@ def load_test_queries(config):
     return queries
 
 
+def load_queries_from_candidates_file(candidates_file):
+    """Load query text and GT video IDs directly from candidate JSON."""
+    with open(candidates_file, 'r') as f:
+        payload = json.load(f)
+
+    if 'results' not in payload:
+        raise ValueError(f"Candidates file missing 'results' key: {candidates_file}")
+
+    return [
+        (item['query_text'], item['ground_truth_video_id'])
+        for item in payload['results']
+    ]
+
+
 def get_unique_video_ids(queries):
     """
     Extract unique video IDs from query list while preserving order.
@@ -111,6 +183,12 @@ def main():
                         help='Path to model checkpoint')
     custom_parser.add_argument('--expanded_pool', action='store_true',
                         help='Add training videos to search pool')
+    custom_parser.add_argument('--report_dir', type=str, default='output/reranker',
+                        help='Directory for CSV/JSON reports')
+    custom_parser.add_argument('--summary_csv', type=str, default=None,
+                        help='Optional path for structured summary CSV')
+    custom_parser.add_argument('--summary_json', type=str, default=None,
+                        help='Optional path for structured summary JSON')
 
     custom_args, _ = custom_parser.parse_known_args()
 
@@ -167,9 +245,13 @@ def main():
     else:
         print(f"Warning: Checkpoint not found: {custom_args.checkpoint}")
 
-    # Load test queries
-    print("\nLoading test queries...")
-    queries = load_test_queries(config)
+    # Load queries
+    if candidates_file:
+        print("\nLoading queries from candidate file...")
+        queries = load_queries_from_candidates_file(candidates_file)
+    else:
+        print("\nLoading test queries...")
+        queries = load_test_queries(config)
     print(f"Total queries: {len(queries)}")
 
     # Get unique video IDs (only needed for full retrieval mode)
@@ -241,6 +323,7 @@ def main():
     # Compute final metrics
     print("\nComputing final metrics...")
     metrics = evaluator.compute_final_metrics()
+    timing_summary = summarize_timing_stats(evaluator.timing_stats)
 
     # Display results
     print("\n" + "="*70)
@@ -260,10 +343,10 @@ def main():
     print("="*70)
 
     # Save results to CSV
-    output_dir = "output/reranker"
-    os.makedirs(output_dir, exist_ok=True)
+    report_dir = custom_args.report_dir
+    os.makedirs(report_dir, exist_ok=True)
 
-    csv_path = os.path.join(output_dir, f"perquery_{config.dataset_name.lower()}_results.csv")
+    csv_path = os.path.join(report_dir, f"perquery_{config.dataset_name.lower()}_results.csv")
     with open(csv_path, 'w', newline='') as csvfile:
         csv_writer = csv.writer(csvfile)
         # Write header
@@ -280,6 +363,43 @@ def main():
         ])
 
     print(f"\nResults saved to: {csv_path}")
+
+    summary_row = build_summary_row(
+        config=config,
+        custom_args=custom_args,
+        evaluator=evaluator,
+        metrics=metrics,
+        timing_summary=timing_summary,
+        candidates_file=candidates_file,
+    )
+    summary_csv_path = custom_args.summary_csv or os.path.join(
+        report_dir, f"perquery_{config.dataset_name.lower()}_summary.csv"
+    )
+    write_summary_csv(summary_csv_path, summary_row)
+    print(f"Structured summary saved to: {summary_csv_path}")
+
+    summary_json_path = custom_args.summary_json or os.path.join(
+        report_dir, f"perquery_{config.dataset_name.lower()}_summary.json"
+    )
+    with open(summary_json_path, 'w') as f:
+        json.dump({
+            'summary': summary_row,
+            'timing_summary': timing_summary,
+            'metrics': {
+                k: float(v) if isinstance(v, (np.integer, np.floating)) else v
+                for k, v in metrics.items() if k != 'timing_avg'
+            },
+            'config': {
+                'dataset': config.dataset_name,
+                'retrieval_mode': summary_row['retrieval_mode'],
+                'candidate_file': candidates_file,
+                'num_frames': config.num_frames,
+                'cache_dir': custom_args.cache_dir,
+                'videos_dir': config.videos_dir,
+                'search_pool_size': len(evaluator.video_ids),
+            }
+        }, f, indent=2)
+    print(f"Structured JSON saved to: {summary_json_path}")
 
     # Save detailed per-query results if requested
     if custom_args.save_results:

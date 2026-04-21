@@ -8,6 +8,7 @@ from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
 from datasets.video_only_dataset import VideoOnlyDataset
+from datasets.media_utils import resolve_media_path
 from torch.utils.data import DataLoader
 from modules.basic_utils import load_json, read_lines
 
@@ -110,9 +111,9 @@ class DataFactory:
                         if clip_id != '1012_Unbreakable_00.05.16.065-00.05.21.941':
                             clip_ids.append(clip_id)
 
-            def lsmdc_path_fn(videos_dir, clip_id, video_ext):
-                clip_prefix = clip_id.split('.')[0][:-3]
-                return os.path.join(videos_dir, clip_prefix, clip_id + video_ext)
+            def lsmdc_path_fn(config, videos_dir, clip_id, video_ext, split_type):
+                video_id = clip_id if clip_id.endswith(video_ext) else clip_id + video_ext
+                return resolve_media_path("LSMDC", videos_dir, video_id)
 
             return clip_ids, config.videos_dir, '.avi', lsmdc_path_fn
 
@@ -122,24 +123,14 @@ class DataFactory:
             # Strip .mp4 suffix to match cache file naming
             video_ids = [item['video'].replace('.mp4', '') for item in annotations]
 
-            def actnet_path_fn(videos_dir, vid, video_ext):
-                # vid does not include .mp4, add it back
-                return os.path.join(videos_dir, vid + '.mp4')
-
-            return video_ids, config.videos_dir, '', actnet_path_fn
+            return video_ids, config.videos_dir, '.mp4', None
 
         elif config.dataset_name == "DIDEMO":
             anno_file = 'reranker/xpool/data/DIDEMO/didemo_ret_train.json'
             annotations = load_json(anno_file)
             # Strip .mp4 suffix to match cache file naming
             video_ids = [item['video'].replace('.mp4', '') for item in annotations]
-            videos_dir = os.path.join(config.videos_dir, 'train', 'videos')
-
-            def didemo_path_fn(videos_dir, vid, video_ext):
-                # vid does not include .mp4, add it back
-                return os.path.join(videos_dir, vid + '.mp4')
-
-            return video_ids, videos_dir, '', didemo_path_fn
+            return video_ids, config.videos_dir, '.mp4', None
 
         else:
             raise NotImplementedError(f"Dataset {config.dataset_name} not supported for expanded pool")
@@ -164,7 +155,7 @@ class DataFactory:
         """
         img_transforms = init_transform_dict(config.input_res)['clip_test']
         dataset = VideoOnlyDataset(
-            config, video_ids, videos_dir, img_transforms, video_ext, path_fn
+            config, video_ids, videos_dir, img_transforms, video_ext, path_fn, split_type='train'
         )
         return DataLoader(
             dataset,

@@ -60,6 +60,10 @@ class AllConfig(Config):
         # expanded pool evaluation parameters
         parser.add_argument('--expanded_pool', action='store_true',
                             help='Add training videos to search pool for expanded evaluation')
+        parser.add_argument('--use_cached_video_features', action='store_true',
+                            help='Load all evaluation video features from cache instead of extracting them from media files')
+        parser.add_argument('--video_cache_dir', type=str, default=None,
+                            help='Base directory containing cached video features; defaults to the architecture-specific cache root')
 
         # result saving parameters
         parser.add_argument('--result_file', type=str, default='test_results.csv', help='Filename for CSV results (saved to output/reranker/)')
