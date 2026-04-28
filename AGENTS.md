@@ -57,6 +57,48 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 - Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.
 - Prefer named `tmux` sessions/windows and report the attach command so the run can be monitored live.
 
+## Current Best
+
+Last updated: 2026-04-28
+
+- Variant: `fit_bucket_l010_g10_k20_s42`
+- Seed: `42`
+- Checkpoint:
+  `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
+- Resolved checkpoint path:
+  `/data2/uqzzha35/semantic_id/output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
+
+Current best Stage 1 candidates:
+- Setting 1 selected beam: `100`
+  - avg_candidates_per_query: `130.73`
+  - candidate Recall@10: `0.627`
+  - candidate file:
+    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t1_beam100.json`
+- Setting 2 selected beam: `15`
+  - avg_candidates_per_query: `300.41`
+  - candidate Recall@10: `0.568`
+  - candidate file:
+    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t2_beam15.json`
+
+Current best Stage 2 results:
+- Setting 1, beam 100:
+  - XPool R@1/R@5/R@10: `45.7 / 69.8 / 78.9`
+  - result file:
+    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t1_beam100_candidates.csv`
+- Setting 2, beam 15:
+  - XPool R@1/R@5/R@10: `17.4 / 32.2 / 40.6`
+  - result file:
+    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t2_beam15_candidates.csv`
+
+Summary artifact:
+- `var/research/2026-04-28-best-ckpt-full-eval/results/summary_manual.tsv`
+
+README MSR-VTT comparison:
+- Setting 1 improves R@10 over README (`78.9` vs `78.0`) but is lower on R@1/R@5.
+- Setting 2 matches README R@1/R@5 and improves R@10 (`40.6` vs `39.7`).
+
+Treat this as the current best until a new run improves the matched setting and evaluation budget.
+
 ## graphify
 
 A knowledge graph of this codebase lives in `graphify-out/`. It is rebuilt automatically when code changes.
