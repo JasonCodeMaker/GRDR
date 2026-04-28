@@ -250,6 +250,41 @@ def strip_video_suffix(video_id):
     return video_id
 
 
+def expand_sid_predictions_to_videos(generated_sids, sid_to_videos):
+    """Expand generated sIDs to first-seen deduplicated video IDs."""
+    ranked_videos = []
+    seen_videos = set()
+    for sid in generated_sids:
+        for video_id in sid_to_videos.get(sid, []):
+            base_video_id = strip_video_suffix(str(video_id))
+            if base_video_id not in seen_videos:
+                seen_videos.add(base_video_id)
+                ranked_videos.append(base_video_id)
+    return ranked_videos
+
+
+def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_videos, ks=(10, 20, 50)):
+    """Compute candidate-expanded GT hit percentages at fixed video ranks."""
+    if len(predictions) != len(ground_truth_video_ids):
+        raise ValueError(
+            f"Expected equal prediction/label counts, got {len(predictions)} and {len(ground_truth_video_ids)}"
+        )
+
+    hits = {k: 0 for k in ks}
+    total = len(ground_truth_video_ids)
+    for generated_sids, gt_video_id in zip(predictions, ground_truth_video_ids):
+        ranked_videos = expand_sid_predictions_to_videos(generated_sids, sid_to_videos)
+        gt_base_video_id = strip_video_suffix(str(gt_video_id))
+        for k in ks:
+            if gt_base_video_id in ranked_videos[:k]:
+                hits[k] += 1
+
+    return {
+        f"CanHit@{k}": (hits[k] / total * 100 if total else 0.0)
+        for k in ks
+    }
+
+
 @torch.no_grad()
 def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_path):
     """Save hierarchical codes for training samples."""
@@ -279,7 +314,7 @@ def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_pat
 @torch.no_grad()
 def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step=0,
                    is_pretrain=False, code_length=4, drift_monitor=None, selection_num_candidates=10, setting=1):
-    """Evaluate Dense Retrieval on test set. Also evaluates sID Retrieval when not in pretrain phase."""
+    """Evaluate Dense Retrieval and candidate-expanded retrieval on the test set."""
     # Import Tree here to avoid circular import
     from utils.model_utils import Tree
 
@@ -327,7 +362,7 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
             }, step=global_step)
 
     if not is_pretrain:
-        accelerator.print('Evaluating sID Retrieval on test set...')
+        accelerator.print('Generating sIDs for candidate-expanded retrieval on test set...')
         selection_num_candidates = max(1, selection_num_candidates)
 
         unique_train_sids = {str(code) for token_codes in train_sample_codes_dict.values() for code in token_codes}
@@ -361,82 +396,8 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
         if accelerator.is_main_process:
             wandb.log({"eval/train_test_collision_rate": collision_rate}, step=global_step)
 
-        # Validation Set Evaluation
-        accelerator.print('Evaluating sID Retrieval on validation set...')
-
-        val_collate_wrapper = lambda batch: collate_fn(batch, tokenizer, max_length=128)
-        val_data_loader = torch.utils.data.DataLoader(
-            val_dataset, collate_fn=val_collate_wrapper, batch_size=batch_size,
-            shuffle=False, num_workers=8
-        )
-
-        val_sample_codes_dict = unwrap_model.gen_sid(val_data_loader)
-
-        val_corpus_ids = []
-        for token_codes in val_sample_codes_dict.values():
-            for code in token_codes:
-                val_corpus_ids.append([0, *code])
-        val_tree = Tree()
-        val_tree.set_all(val_corpus_ids)
-
-        val_query_labels = []
-        for sample in val_dataset.samples:
-            video_id = sample['video_id']
-            gt_sids = val_sample_codes_dict[video_id]
-            gt_sid_strs = [str([0, *code]) for code in gt_sids]
-            val_query_labels.append(gt_sid_strs)
-
-        val_tk0 = tqdm(val_data_loader, total=len(val_data_loader), desc='Val sID')
-        val_output_all = []
-        top_k = 10
-        with torch.no_grad():
-            for batch in val_tk0:
-                batch = {k: v.to(accelerator.device) for k, v in batch.items()
-                         if isinstance(v, torch.Tensor)}
-                output = unwrap_model.generate(
-                    input_ids=batch['caption_tokens'],
-                    attention_mask=batch['attention_mask'],
-                    max_length=code_length + 1,
-                    num_beams=top_k,
-                    num_return_sequences=top_k,
-                    prefix_allowed_tokens_fn=val_tree
-                )
-                beam = []
-                new_output = []
-                for line in output:
-                    if len(beam) >= top_k:
-                        new_output.append(beam)
-                        beam = []
-                    beam.append(line.cpu().tolist())
-                new_output.append(beam)
-                val_output_all.extend(new_output)
-
-        val_predictions = []
-        for generated_codes in val_output_all:
-            seen_sids = set()
-            sid_list = []
-            for code in generated_codes:
-                code_str = str(code)
-                if code_str not in seen_sids:
-                    seen_sids.add(code_str)
-                    sid_list.append(code_str)
-            val_predictions.append(sid_list)
-
-        val_sid_results = eval_all(val_predictions, val_query_labels)
-        accelerator.print('Validation sID Retrieval:', val_sid_results)
-
-        if accelerator.is_main_process:
-            wandb.log({f"eval/val_sID_R@{k}": v for k, v in val_sid_results.items()}, step=global_step)
-
         # Test Set Evaluation
-        accelerator.print('Evaluating sID Retrieval on test set...')
-
-        query_labels = []
-        for sample in test_dataset.samples:
-            video_id = sample['video_id']
-            gt_sids = sample_codes_dict[video_id]
-            gt_sid_strs = [str([0, *code]) for code in gt_sids]
-            query_labels.append(gt_sid_strs)
+        accelerator.print('Evaluating candidate-expanded retrieval on test set...')
 
         test_corpus_codes = {}
         candidate_pools = [sample_codes_dict] if setting == 1 else [train_sample_codes_dict, sample_codes_dict]
@@ -452,10 +413,11 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
                 corpus_ids.append([0, *code])
         tree = Tree()
         tree.set_all(corpus_ids)
+        sid_to_videos = build_sid_to_videos_mapping(test_corpus_codes)
 
-        tk0 = tqdm(test_data_loader, total=len(test_data_loader), desc='sID Retrieval')
+        tk0 = tqdm(test_data_loader, total=len(test_data_loader), desc='CanHit Retrieval')
         output_all = []
-        test_top_k = max(10, selection_num_candidates)
+        test_top_k = max(50, selection_num_candidates)
         with torch.no_grad():
             for batch in tk0:
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()
@@ -491,17 +453,16 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
             predictions.append(sid_list)
 
-        sid_results = eval_all(predictions, query_labels)
-        selection_metric = eval_recall(predictions, query_labels, at=selection_num_candidates)[f'R@{selection_num_candidates}'] * 100
-        accelerator.print('sID Retrieval:', sid_results)
-        accelerator.print(f'Selection metric Recall@{selection_num_candidates}: {selection_metric:.4f}')
+        gt_video_ids = [sample['video_id'] for sample in test_dataset.samples]
+        canhit_results = compute_candidate_hit_metrics(predictions, gt_video_ids, sid_to_videos, ks=(10, 20, 50))
+        selection_metric = canhit_results["CanHit@50"]
+        accelerator.print('Candidate-expanded retrieval:', canhit_results)
+        accelerator.print(f'Selection metric CanHit@50: {selection_metric:.4f}')
 
         if accelerator.is_main_process:
-            wandb.log({f"eval/sID_R@{k}": v for k, v in sid_results.items()}, step=global_step)
-            if selection_num_candidates not in (1, 5, 10):
-                wandb.log({f"eval/sID_R@{selection_num_candidates}": selection_metric}, step=global_step)
+            wandb.log({f"eval/{k}": v for k, v in canhit_results.items()}, step=global_step)
 
-        results.update({f"sID_{k}": v for k, v in sid_results.items()})
+        results.update(canhit_results)
 
     if is_pretrain:
         overall_metric = sum(results.values())
@@ -631,7 +592,7 @@ def test(config):
     t5 = T5ForConditionalGeneration.from_pretrained(model_name,
                                                     torch_dtype=torch_dtype,
                                                     config=t5_config)
-    model = GRDR(model=t5, code_length=code_length, zero_inp=False,
+    model = GRDR(model=t5, use_constraint=False, code_length=code_length, zero_inp=False,
                  code_number=code_num, videorqvae=videorqvae)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -1127,7 +1088,7 @@ def test_dr(config, checkpoint):
     )
 
     t5 = T5ForConditionalGeneration.from_pretrained(model_name, torch_dtype=torch_dtype, config=t5_config)
-    model = GRDR(model=t5, code_length=code_length, zero_inp=False,
+    model = GRDR(model=t5, use_constraint=False, code_length=code_length, zero_inp=False,
                  code_number=code_num, videorqvae=videorqvae)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = model.cuda()

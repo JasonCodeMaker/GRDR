@@ -6,9 +6,9 @@ source scripts/_common.sh
 source_conda_sh
 
 DEVICE="${DEVICE:-0}"
-NUM_WARMUP="${NUM_WARMUP:-10}"
-INDEX_TYPES_STR="${INDEX_TYPES:-flat hnsw ivf}"
-STAGE2_INDEX_TYPE="${STAGE2_INDEX_TYPE:-flat}"
+NUM_WARMUP="${NUM_WARMUP:-0}"
+INDEX_TYPES_STR="${INDEX_TYPES:-hnsw ivf}"
+STAGE2_INDEX_TYPES_STR="${STAGE2_INDEX_TYPES:-$INDEX_TYPES_STR}"
 STAGE2_NUM_CANDIDATES="${STAGE2_NUM_CANDIDATES:-100}"
 RUN_STAGE1="${RUN_STAGE1:-1}"
 RUN_STAGE2="${RUN_STAGE2:-1}"
@@ -22,7 +22,9 @@ STAGE2_CSV="${STAGE2_CSV:-$OUTPUT_ROOT/ann_stage2_latency_once_per_dataset.csv}"
 COMPACT_CSV="${COMPACT_CSV:-$OUTPUT_ROOT/ann_per_query_latency_compact.csv}"
 
 read -r -a INDEX_TYPES <<<"$INDEX_TYPES_STR"
+read -r -a STAGE2_INDEX_TYPES <<<"$STAGE2_INDEX_TYPES_STR"
 DATASETS=(msrvtt actnet didemo lsmdc)
+SETTINGS=(1 2)
 
 ckpt_for() {
   case "$1" in
@@ -60,14 +62,18 @@ resolve_stage2_videos_dir() {
 }
 
 run_stage2_latency_once() {
-  local dataset="$1"
-  local candidate_file="$CANDIDATE_DIR/${dataset}_ann_${STAGE2_INDEX_TYPE}_${STAGE2_NUM_CANDIDATES}_candidates_t1.json"
+  local dataset="$1" setting="$2" index_type="$3"
+  local candidate_file="$CANDIDATE_DIR/${dataset}_ann_${index_type}_${STAGE2_NUM_CANDIDATES}_candidates_t${setting}.json"
   local triple ds_name videos_dir cache_dir extra_str
   local ckpt
+  local report_dir summary_csv summary_json
   triple=$(xpool_latency_args "$dataset")
   IFS=';' read -r ds_name videos_dir cache_dir extra_str <<<"$triple"
   videos_dir=$(resolve_stage2_videos_dir "$videos_dir")
   ckpt=$(ckpt_for "$dataset")
+  report_dir="$STAGE2_ROOT/$index_type/$dataset/setting${setting}"
+  summary_csv="$report_dir/perquery_${dataset}_setting${setting}_${index_type}_summary.csv"
+  summary_json="$report_dir/perquery_${dataset}_setting${setting}_${index_type}_summary.json"
 
   require_file "$candidate_file"
   require_file "$ckpt"
@@ -84,7 +90,9 @@ run_stage2_latency_once() {
     --checkpoint "$ckpt" \
     --cache_dir "$cache_dir" \
     --candidate_file "$candidate_file" \
-    --report_dir "$STAGE2_ROOT/$dataset" \
+    --report_dir "$report_dir" \
+    --summary_csv "$summary_csv" \
+    --summary_json "$summary_json" \
     --seed 42 \
     "${extra[@]}"
   deactivate_conda_env
@@ -110,11 +118,15 @@ fi
 
 if [[ "$RUN_STAGE2" == "1" ]]; then
   for dataset in "${DATASETS[@]}"; do
-    echo ""
-    echo "########################################################################"
-    echo "Stage 2 per-query latency | dataset=${dataset} | candidates=${STAGE2_NUM_CANDIDATES}"
-    echo "########################################################################"
-    run_stage2_latency_once "$dataset"
+    for setting in "${SETTINGS[@]}"; do
+      for index_type in "${STAGE2_INDEX_TYPES[@]}"; do
+        echo ""
+        echo "########################################################################"
+        echo "Stage 2 per-query latency | dataset=${dataset} | setting=${setting} | index=${index_type} | candidates=${STAGE2_NUM_CANDIDATES}"
+        echo "########################################################################"
+        run_stage2_latency_once "$dataset" "$setting" "$index_type"
+      done
+    done
   done
 fi
 

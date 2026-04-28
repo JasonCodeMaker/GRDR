@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unified latency reporter on (ANN-Flat, GRDR Stage-1) candidate JSONs.
+# Unified latency reporter on ANN and GRDR Stage-1 candidate JSONs.
 # Reports per-query (T_text_encode, T_search, T_rerank, total) at identical K.
 set -euo pipefail
 
@@ -7,7 +7,7 @@ cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 source scripts/_common.sh
 
 DEVICE=0
-INDEX_TYPE=flat
+INDEX_TYPE=hnsw
 MAX_QUERIES=100
 NUM_RUNS=3
 NUM_WARMUP=5

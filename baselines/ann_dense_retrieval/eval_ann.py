@@ -1,20 +1,19 @@
 """ANN + Dense Retrieval baseline for text-to-video retrieval.
 
-Stage-1 candidate selection using XPool-CLIP video embeddings + FAISS.
+Stage-1 candidate selection uses XPool-CLIP video embeddings plus offline ANN
+structures. The intended pipeline is:
+1. Offline index construction: load pooled video embeddings from cache, build
+   the ANN structure, and persist only structure + mapping to disk.
+2. Online query handling: encode one query, use the saved structure to decide
+   which videos to inspect, load those videos' frame_embeds from disk, and
+   export candidates for Stage 2.
+
 Designed to plug into the same Stage-2 X-Pool reranker as GRDR via
 candidates/<ds>_ann_<idx>_<K>_candidates_t<setting>.json.
-
-Key features:
-- --per_query_timing: batch=1 encode and batch=1 search loop with warmup,
-  emits per-query (T_text_encode, T_search) into the candidate JSON metadata
-  so latency_report.py can stitch with Stage-2 numbers.
-- ANN-baseline defaults for K via ANN_BASELINE_NUM_CANDIDATES[(dataset, setting)];
-  the CLI --num_candidates overrides if set.
-- Clip-suffix stripping (matches trainer/evaluator.py:711-743) when building
-  pools, so the ANN pool size matches the GRDR pool size by construction.
 """
 import argparse
 import csv
+import heapq
 import json
 import os
 import re
@@ -35,6 +34,7 @@ ANN_BASELINE_NUM_CANDIDATES = {
     ('didemo', 1): 100, ('didemo', 2): 100,
     ('lsmdc',  1): 100, ('lsmdc',  2): 100,
 }
+SUPPORTED_INDEX_TYPES = ('hnsw', 'ivf')
 
 
 def parse_args():
@@ -44,12 +44,15 @@ def parse_args():
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                         help='1=test-only pool, 2=train+test combined pool')
     parser.add_argument('--index_type', type=str, default='all',
-                        choices=['flat', 'hnsw', 'ivf', 'all'])
+                        choices=[*SUPPORTED_INDEX_TYPES, 'all'])
     parser.add_argument('--checkpoint', type=str,
                         default='reranker/xpool/ckpt/msrvtt9k_model_best.pth')
     parser.add_argument('--cache_dir', type=str,
                         default='reranker/xpool/video_features_cache/Xpool')
     parser.add_argument('--output_dir', type=str, default='output/ann_baseline')
+    parser.add_argument('--index_dir', type=str, default=None,
+                        help='Directory to store offline ANN index artifacts. '
+                             'Defaults to <output_dir>/indexes.')
     parser.add_argument('--device', type=int, default=0)
     parser.add_argument('--batch_size', type=int, default=64,
                         help='Encode/search batch (only used when --per_query_timing is OFF)')
@@ -61,9 +64,10 @@ def parse_args():
                         help='K for candidate output. Defaults to ANN_BASELINE_NUM_CANDIDATES[(ds,setting)] if unset.')
     parser.add_argument('--candidate_dir', type=str, default='candidates')
     parser.add_argument('--per_query_timing', action='store_true',
-                        help='Run encode and FAISS search one query at a time '
-                             'with warmup; record per-query timings in JSON metadata.')
-    parser.add_argument('--num_warmup', type=int, default=10,
+                        help='Run online evaluation one query at a time; each '
+                             'query reloads video features from disk and records '
+                             'per-query timings in JSON metadata.')
+    parser.add_argument('--num_warmup', type=int, default=0,
                         help='Warmup queries for --per_query_timing')
     return parser.parse_args()
 
@@ -73,6 +77,22 @@ DATASET_NAME_MAP = {
     'msrvtt': 'MSRVTT', 'actnet': 'ACTNET',
     'didemo': 'DIDEMO', 'lsmdc': 'LSMDC',
 }
+
+
+def resolve_dataset_cache_dir(cache_dir, dataset):
+    dataset_name = DATASET_NAME_MAP[dataset]
+    normalized_cache_dir = os.path.normpath(cache_dir)
+    if os.path.basename(normalized_cache_dir).upper() == dataset_name.upper():
+        return normalized_cache_dir
+    return os.path.join(normalized_cache_dir, dataset_name)
+
+
+def normalize_cache_video_id(video_id):
+    if video_id.endswith('.mp4'):
+        return video_id[:-4]
+    if video_id.endswith('.avi'):
+        return video_id[:-4]
+    return video_id
 
 
 def strip_clip_suffix(video_id):
@@ -149,18 +169,26 @@ def load_train_video_ids(dataset):
 
 
 # Feature loading
+def pooled_video_vector(frame_embeds):
+    pooled = frame_embeds.mean(axis=0).astype(np.float32, copy=False)
+    norm = np.linalg.norm(pooled)
+    if norm > 1e-8:
+        pooled = pooled / norm
+    return pooled
+
+
 def load_video_embeddings(video_ids, cache_dir, dataset):
     """Mean-pool cached XPool frame embeddings to a single 512-d vector per video."""
-    cache_path = os.path.join(cache_dir, DATASET_NAME_MAP[dataset])
+    cache_path = resolve_dataset_cache_dir(cache_dir, dataset)
     embs, valid = [], []
     missing = 0
     for vid in tqdm(video_ids, desc=f"Loading {dataset} video features"):
-        npz_path = os.path.join(cache_path, f"{vid}.npz")
+        npz_path = os.path.join(cache_path, f"{normalize_cache_video_id(vid)}.npz")
         if not os.path.exists(npz_path):
             missing += 1
             continue
-        data = np.load(npz_path)
-        embs.append(data['frame_embeds'].mean(axis=0))
+        with np.load(npz_path) as data:
+            embs.append(pooled_video_vector(data['frame_embeds']))
         valid.append(vid)
     if missing > 0:
         print(f"Warning: {missing}/{len(video_ids)} videos missing from cache")
@@ -202,13 +230,6 @@ def normalize(x):
     return x / np.maximum(norms, 1e-8)
 
 
-def build_flat_index(embeddings):
-    """Exact inner product on L2-normalized vectors (cosine similarity)."""
-    index = faiss.IndexFlatIP(embeddings.shape[1])
-    index.add(normalize(embeddings))
-    return index
-
-
 def build_hnsw_index(embeddings, M=32, ef_search=128):
     """HNSW approximate nearest neighbor (inner product)."""
     index = faiss.IndexHNSWFlat(embeddings.shape[1], M, faiss.METRIC_INNER_PRODUCT)
@@ -231,6 +252,304 @@ def build_ivf_index(embeddings, nlist=100, nprobe=10):
     return index
 
 
+def build_index(embeddings, idx_type, args):
+    if idx_type == 'hnsw':
+        return build_hnsw_index(embeddings, M=args.hnsw_m, ef_search=args.hnsw_ef_search)
+    if idx_type == 'ivf':
+        return build_ivf_index(embeddings, nlist=args.ivf_nlist, nprobe=args.ivf_nprobe)
+    raise ValueError(f"Unsupported ANN index type: {idx_type}")
+
+
+def index_path_for(index_dir, idx_type, dataset, setting):
+    return os.path.join(index_dir, f"{dataset}_{idx_type}_setting{setting}.npz")
+
+
+def index_meta_path_for(index_dir, idx_type, dataset, setting):
+    return os.path.join(index_dir, f"{dataset}_{idx_type}_setting{setting}.meta.json")
+
+
+def index_id_map_path_for(index_dir, idx_type, dataset, setting):
+    return os.path.join(index_dir, f"{dataset}_{idx_type}_setting{setting}.id_map.json")
+
+
+def extract_hnsw_structure(index):
+    hnsw = index.hnsw
+    max_level = int(hnsw.max_level)
+    return {
+        'entry_point': np.array([int(hnsw.entry_point)], dtype=np.int64),
+        'max_level': np.array([max_level], dtype=np.int32),
+        'levels': faiss.vector_to_array(hnsw.levels).astype(np.int32),
+        'offsets': faiss.vector_to_array(hnsw.offsets).astype(np.int64),
+        'neighbors': faiss.vector_to_array(hnsw.neighbors).astype(np.int32),
+        'cum_nneighbor_per_level': np.array(
+            [hnsw.cum_nb_neighbors(level) for level in range(max_level + 2)],
+            dtype=np.int32,
+        ),
+    }
+
+
+def extract_ivf_structure(index):
+    centroids = np.stack(
+        [index.quantizer.reconstruct(i) for i in range(index.nlist)],
+        axis=0,
+    ).astype(np.float32)
+    list_offsets = [0]
+    list_row_ids = []
+    for list_no in range(index.nlist):
+        list_size = index.invlists.list_size(list_no)
+        if list_size > 0:
+            ids_ptr = index.invlists.get_ids(list_no)
+            try:
+                ids = faiss.rev_swig_ptr(ids_ptr, list_size).astype(np.int64).copy()
+            finally:
+                index.invlists.release_ids(list_no, ids_ptr)
+            list_row_ids.append(ids)
+            list_offsets.append(list_offsets[-1] + list_size)
+        else:
+            list_offsets.append(list_offsets[-1])
+    if list_row_ids:
+        list_row_ids = np.concatenate(list_row_ids, axis=0)
+    else:
+        list_row_ids = np.empty((0,), dtype=np.int64)
+    return {
+        'centroids': centroids,
+        'list_offsets': np.array(list_offsets, dtype=np.int64),
+        'list_row_ids': list_row_ids,
+    }
+
+
+def extract_index_structure(index, idx_type):
+    if idx_type == 'hnsw':
+        return extract_hnsw_structure(index)
+    if idx_type == 'ivf':
+        return extract_ivf_structure(index)
+    raise ValueError(f"Unsupported ANN index type: {idx_type}")
+
+
+def save_index_artifacts(index, index_path, meta_path, id_map_path, idx_type, args, pool_ids,
+                         video_embedding_load_time_s, build_time_s):
+    os.makedirs(os.path.dirname(index_path), exist_ok=True)
+    np.savez_compressed(index_path, **extract_index_structure(index, idx_type))
+    with open(id_map_path, 'w') as f:
+        json.dump(pool_ids, f, indent=2)
+
+    pool_size = len(pool_ids)
+
+    metadata = {
+        'dataset': args.dataset,
+        'setting': args.setting,
+        'index_type': idx_type,
+        'pool_size': pool_size,
+        'metric': 'inner_product',
+        'normalized': True,
+        'video_embedding_load_time_s': float(video_embedding_load_time_s),
+        'build_time_s': float(build_time_s),
+        'id_map_path': id_map_path,
+    }
+    if idx_type == 'hnsw':
+        metadata.update({
+            'hnsw_m': int(args.hnsw_m),
+            'hnsw_ef_search': int(args.hnsw_ef_search),
+        })
+    elif idx_type == 'ivf':
+        metadata.update({
+            'ivf_nlist': int(min(args.ivf_nlist, max(1, pool_size // 4))),
+            'ivf_nprobe': int(min(args.ivf_nprobe, min(args.ivf_nlist, max(1, pool_size // 4)))),
+        })
+
+    with open(meta_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+
+def load_saved_structure(index_path, idx_type):
+    with np.load(index_path, allow_pickle=False) as data:
+        structure = {name: data[name] for name in data.files}
+    if idx_type == 'hnsw':
+        structure['entry_point'] = int(structure['entry_point'][0])
+        structure['max_level'] = int(structure['max_level'][0])
+    return structure
+
+
+def load_saved_id_map(id_map_path):
+    with open(id_map_path) as f:
+        return json.load(f)
+
+
+class QueryVideoStore:
+    def __init__(self, cache_dir, dataset, id_map):
+        self.cache_dir = resolve_dataset_cache_dir(cache_dir, dataset)
+        self.id_map = id_map
+        self.cache = {}
+        self.video_load_s = 0.0
+        self.video_pool_s = 0.0
+        self.disk_reads = 0
+
+    def get(self, row_id):
+        row_id = int(row_id)
+        cached = self.cache.get(row_id)
+        if cached is not None:
+            return cached
+
+        video_id = normalize_cache_video_id(self.id_map[row_id])
+        cache_path = os.path.join(self.cache_dir, f"{video_id}.npz")
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(f"Cached video features not found: {cache_path}")
+
+        t0 = time.perf_counter()
+        with np.load(cache_path) as data:
+            frame_embeds = data['frame_embeds']
+        self.video_load_s += time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        vector = pooled_video_vector(frame_embeds)
+        self.video_pool_s += time.perf_counter() - t0
+
+        self.cache[row_id] = vector
+        self.disk_reads += 1
+        return vector
+
+
+def finalize_topk(topk_heap, k):
+    retrieved = np.full(k, -1, dtype=np.int64)
+    distances = np.full(k, -np.inf, dtype=np.float32)
+    ordered = sorted(topk_heap, key=lambda item: (-item[0], item[1]))
+    for i, (score, row_id) in enumerate(ordered[:k]):
+        distances[i] = np.float32(score)
+        retrieved[i] = np.int64(row_id)
+    return retrieved, distances
+
+
+def topk_desc(scores, k):
+    if scores.size == 0:
+        return np.empty((0,), dtype=np.int64)
+    k = min(k, scores.size)
+    if k <= 0:
+        return np.empty((0,), dtype=np.int64)
+    idx = np.argpartition(-scores, k - 1)[:k]
+    return idx[np.argsort(-scores[idx])]
+
+
+def hnsw_neighbors(structure, node_id, level):
+    if level >= int(structure['levels'][node_id]):
+        return np.empty((0,), dtype=np.int32)
+    base = int(structure['offsets'][node_id])
+    start = base + int(structure['cum_nneighbor_per_level'][level])
+    end = base + int(structure['cum_nneighbor_per_level'][level + 1])
+    neighbors = structure['neighbors'][start:end]
+    return neighbors[neighbors >= 0]
+
+
+def search_manual_ivf(query_vec, structure, args, vector_store, k):
+    similarity_s = 0.0
+    topk_heap = []
+    centroids = structure['centroids']
+    centroid_scores = centroids @ query_vec
+    probed_lists = topk_desc(centroid_scores, min(args.ivf_nprobe, centroids.shape[0]))
+    list_offsets = structure['list_offsets']
+    list_row_ids = structure['list_row_ids']
+
+    scored = 0
+    for list_no in probed_lists:
+        start = int(list_offsets[list_no])
+        end = int(list_offsets[list_no + 1])
+        for row_id in list_row_ids[start:end]:
+            vector = vector_store.get(row_id)
+            t0 = time.perf_counter()
+            score = float(np.dot(query_vec, vector))
+            similarity_s += time.perf_counter() - t0
+            scored += 1
+            item = (score, int(row_id))
+            if len(topk_heap) < k:
+                heapq.heappush(topk_heap, item)
+            elif score > topk_heap[0][0]:
+                heapq.heapreplace(topk_heap, item)
+
+    retrieved, distances = finalize_topk(topk_heap, k)
+    return retrieved, distances, {
+        'similarity_s': similarity_s,
+        'vectors_scored': scored,
+        'lists_probed': int(len(probed_lists)),
+    }
+
+
+def search_manual_hnsw(query_vec, structure, args, vector_store, k):
+    similarity_s = 0.0
+    score_cache = {}
+
+    def score_node(row_id):
+        row_id = int(row_id)
+        cached = score_cache.get(row_id)
+        if cached is not None:
+            return cached
+        vector = vector_store.get(row_id)
+        t0 = time.perf_counter()
+        score = float(np.dot(query_vec, vector))
+        nonlocal similarity_s
+        similarity_s += time.perf_counter() - t0
+        score_cache[row_id] = score
+        return score
+
+    entry_point = int(structure['entry_point'])
+    if entry_point < 0:
+        return finalize_topk([], k) + ({
+            'similarity_s': 0.0,
+            'vectors_scored': 0,
+            'visited_nodes': 0,
+        },)
+
+    current = entry_point
+    current_score = score_node(current)
+    for level in range(int(structure['max_level']), 0, -1):
+        improved = True
+        while improved:
+            improved = False
+            for neighbor in hnsw_neighbors(structure, current, level):
+                neighbor = int(neighbor)
+                neighbor_score = score_node(neighbor)
+                if neighbor_score > current_score:
+                    current = neighbor
+                    current_score = neighbor_score
+                    improved = True
+
+    ef_search = max(k, min(args.hnsw_ef_search, len(structure['levels'])))
+    visited = {current}
+    candidates = [(-current_score, current)]
+    topk_heap = [(current_score, current)]
+
+    while candidates:
+        neg_score, node_id = heapq.heappop(candidates)
+        node_score = -neg_score
+        lower_bound = topk_heap[0][0]
+        if len(topk_heap) >= ef_search and node_score < lower_bound:
+            break
+        for neighbor in hnsw_neighbors(structure, int(node_id), 0):
+            neighbor = int(neighbor)
+            if neighbor in visited:
+                continue
+            visited.add(neighbor)
+            neighbor_score = score_node(neighbor)
+            if len(topk_heap) < ef_search or neighbor_score > topk_heap[0][0]:
+                heapq.heappush(candidates, (-neighbor_score, neighbor))
+                heapq.heappush(topk_heap, (neighbor_score, neighbor))
+                if len(topk_heap) > ef_search:
+                    heapq.heappop(topk_heap)
+
+    retrieved, distances = finalize_topk(topk_heap, k)
+    return retrieved, distances, {
+        'similarity_s': similarity_s,
+        'vectors_scored': len(score_cache),
+        'visited_nodes': len(visited),
+    }
+
+
+def search_manual(query_vec, structure, idx_type, args, vector_store, k):
+    if idx_type == 'ivf':
+        return search_manual_ivf(query_vec, structure, args, vector_store, k)
+    if idx_type == 'hnsw':
+        return search_manual_hnsw(query_vec, structure, args, vector_store, k)
+    raise ValueError(f"Unsupported ANN index type: {idx_type}")
+
+
 # Evaluation
 def compute_metrics(ranks):
     return {
@@ -242,52 +561,76 @@ def compute_metrics(ranks):
     }
 
 
-def search_batched(query_embs, index, gt_indices, k):
-    """Throughput path: search all queries in one call."""
-    qn = normalize(query_embs)
-    if hasattr(faiss, 'omp_set_num_threads'):
-        pass  # leave thread count to global default
-    t0 = time.perf_counter()
-    distances, retrieved = index.search(qn, k)
-    search_time = time.perf_counter() - t0
-    n = len(gt_indices)
+def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k):
+    """Throughput path: query embeddings are ready; search one query at a time."""
+    query_embs = normalize(query_embs)
+    n = len(query_embs)
+    retrieved = np.full((n, k), -1, dtype=np.int64)
+    distances = np.full((n, k), -np.inf, dtype=np.float32)
+    total_search_s = 0.0
+    for i in tqdm(range(n), desc="Searching queries"):
+        vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
+        t0 = time.perf_counter()
+        rows, scores, _ = search_manual(
+            query_embs[i], structure, idx_type, args, vector_store, k)
+        total_search_s += time.perf_counter() - t0
+        retrieved[i] = rows
+        distances[i] = scores
+
     ranks = np.full(n, k + 1, dtype=np.float64)
     for i in range(n):
         m = np.where(retrieved[i] == gt_indices[i])[0]
         if len(m) > 0:
             ranks[i] = m[0]
     metrics = compute_metrics(ranks)
-    metrics['search_time_total_s'] = search_time
-    metrics['search_time_per_query_ms'] = 1000.0 * search_time / max(n, 1)
-    metrics['queries_per_sec'] = n / search_time if search_time > 0 else 0
+    metrics['search_time_total_s'] = float(total_search_s)
+    metrics['search_time_per_query_ms'] = 1000.0 * total_search_s / max(n, 1)
+    metrics['queries_per_sec'] = n / total_search_s if total_search_s > 0 else 0
     return metrics, retrieved, distances, None  # last slot reserved for per-query timings
 
 
-def search_per_query(captions, model, tokenizer, device, index, gt_indices,
-                     k, num_warmup):
-    """Per-query path: batch=1 encode + batch=1 search, with warmup. Returns
-    metrics, retrieved [n,k], distances [n,k], and per-query timings list."""
+def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx_type,
+                     args, gt_indices, k, num_warmup):
+    """Online path: preload structure once; reload video features from disk per query."""
     n = len(captions)
     retrieved = np.full((n, k), -1, dtype=np.int64)
     distances = np.full((n, k), -np.inf, dtype=np.float32)
-    timings = []  # list of dicts: {encode_s, search_s}
+    timings = []
 
-    # Warmup using first few queries to settle CUDA kernels and OS cache.
-    print(f"  Warmup: {num_warmup} queries (excluded from timing)")
+    print(f"  Warmup text encoder only: {num_warmup} queries (excluded from timing)")
     for i in range(min(num_warmup, n)):
-        emb, _ = encode_text_per_query(captions[i], model, tokenizer, device)
-        _ = index.search(normalize(emb), k)
+        _ = encode_text_per_query(captions[i], model, tokenizer, device)
 
-    print(f"  Per-query timing: {n} queries (batch=1 encode + batch=1 search)")
+    structure_load_start = time.perf_counter()
+    structure = load_saved_structure(index_path, idx_type)
+    structure_load_s = time.perf_counter() - structure_load_start
+
+    print(f"  Per-query timing: {n} queries "
+          f"(batch=1 encode + disk video loads + batch=1 search)")
     for i in tqdm(range(n), desc="Per-query"):
+        t_total = time.perf_counter()
         emb, t_enc = encode_text_per_query(captions[i], model, tokenizer, device)
-        emb_norm = normalize(emb)
+        vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
+        query_vec = normalize(emb)[0]
         t0 = time.perf_counter()
-        d, r = index.search(emb_norm, k)
+        rows, scores, search_stats = search_manual(
+            query_vec, structure, idx_type, args, vector_store, k)
         t_search = time.perf_counter() - t0
-        retrieved[i] = r[0]
-        distances[i] = d[0]
-        timings.append({'encode_s': t_enc, 'search_s': t_search})
+        retrieved[i] = rows
+        distances[i] = scores
+        timings.append({
+            'encode_s': t_enc,
+            'index_load_s': 0.0,
+            'video_load_s': vector_store.video_load_s,
+            'video_pool_s': vector_store.video_pool_s,
+            'similarity_s': search_stats['similarity_s'],
+            'search_s': t_search,
+            'total_s': time.perf_counter() - t_total,
+            'vectors_scored': search_stats.get('vectors_scored', 0),
+            'lists_probed': search_stats.get('lists_probed', 0),
+            'visited_nodes': search_stats.get('visited_nodes', 0),
+            'disk_reads': vector_store.disk_reads,
+        })
 
     ranks = np.full(n, k + 1, dtype=np.float64)
     for i in range(n):
@@ -296,13 +639,30 @@ def search_per_query(captions, model, tokenizer, device, index, gt_indices,
             ranks[i] = m[0]
     metrics = compute_metrics(ranks)
     enc_arr = np.array([t['encode_s'] for t in timings])
+    load_arr = np.array([t['index_load_s'] for t in timings])
+    video_load_arr = np.array([t['video_load_s'] for t in timings])
+    video_pool_arr = np.array([t['video_pool_s'] for t in timings])
+    similarity_arr = np.array([t['similarity_s'] for t in timings])
     sea_arr = np.array([t['search_s'] for t in timings])
+    total_arr = np.array([t['total_s'] for t in timings])
     metrics['encode_time_per_query_ms_mean'] = float(1000.0 * enc_arr.mean())
     metrics['encode_time_per_query_ms_std'] = float(1000.0 * enc_arr.std())
+    metrics['index_load_time_per_query_ms_mean'] = float(1000.0 * load_arr.mean())
+    metrics['index_load_time_per_query_ms_std'] = float(1000.0 * load_arr.std())
+    metrics['video_load_time_per_query_ms_mean'] = float(1000.0 * video_load_arr.mean())
+    metrics['video_load_time_per_query_ms_std'] = float(1000.0 * video_load_arr.std())
+    metrics['video_pool_time_per_query_ms_mean'] = float(1000.0 * video_pool_arr.mean())
+    metrics['video_pool_time_per_query_ms_std'] = float(1000.0 * video_pool_arr.std())
+    metrics['similarity_time_per_query_ms_mean'] = float(1000.0 * similarity_arr.mean())
+    metrics['similarity_time_per_query_ms_std'] = float(1000.0 * similarity_arr.std())
     metrics['search_time_per_query_ms_mean'] = float(1000.0 * sea_arr.mean())
     metrics['search_time_per_query_ms_std'] = float(1000.0 * sea_arr.std())
+    metrics['online_time_per_query_ms_mean'] = float(1000.0 * total_arr.mean())
+    metrics['online_time_per_query_ms_std'] = float(1000.0 * total_arr.std())
     metrics['search_time_total_s'] = float(sea_arr.sum())
-    metrics['queries_per_sec'] = float(n / max(sea_arr.sum(), 1e-9))
+    metrics['online_time_total_s'] = float(total_arr.sum())
+    metrics['queries_per_sec'] = float(n / max(total_arr.sum(), 1e-9))
+    metrics['structure_load_time_s'] = float(structure_load_s)
     return metrics, retrieved, distances, timings
 
 
@@ -326,7 +686,12 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
             t = per_query_timings[i]
             result_entry['stage1_timing_ms'] = {
                 'text_encode': 1000.0 * t['encode_s'],
+                'index_load': 1000.0 * t['index_load_s'],
+                'video_load': 1000.0 * t['video_load_s'],
+                'video_pool': 1000.0 * t['video_pool_s'],
+                'similarity': 1000.0 * t['similarity_s'],
                 'search': 1000.0 * t['search_s'],
+                'total': 1000.0 * t['total_s'],
             }
         results.append(result_entry)
 
@@ -346,8 +711,18 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
         metadata['stage1_latency_ms'] = {
             'text_encode_mean': metrics.get('encode_time_per_query_ms_mean'),
             'text_encode_std': metrics.get('encode_time_per_query_ms_std'),
+            'index_load_mean': metrics.get('index_load_time_per_query_ms_mean'),
+            'index_load_std': metrics.get('index_load_time_per_query_ms_std'),
+            'video_load_mean': metrics.get('video_load_time_per_query_ms_mean'),
+            'video_load_std': metrics.get('video_load_time_per_query_ms_std'),
+            'video_pool_mean': metrics.get('video_pool_time_per_query_ms_mean'),
+            'video_pool_std': metrics.get('video_pool_time_per_query_ms_std'),
+            'similarity_mean': metrics.get('similarity_time_per_query_ms_mean'),
+            'similarity_std': metrics.get('similarity_time_per_query_ms_std'),
             'search_mean': metrics.get('search_time_per_query_ms_mean'),
             'search_std': metrics.get('search_time_per_query_ms_std'),
+            'online_total_mean': metrics.get('online_time_per_query_ms_mean'),
+            'online_total_std': metrics.get('online_time_per_query_ms_std'),
         }
     output = {
         'metadata': metadata,
@@ -372,6 +747,8 @@ def main():
     args = parse_args()
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.device)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.index_dir is None:
+        args.index_dir = os.path.join(args.output_dir, 'indexes')
 
     if args.num_candidates is None:
         args.num_candidates = ANN_BASELINE_NUM_CANDIDATES[(args.dataset, args.setting)]
@@ -408,9 +785,12 @@ def main():
         print(f"Setting 1: {len(pool_video_ids)} test base videos in pool")
 
     # 3. Load video embeddings (cache files keyed by base id).
+    t0 = time.perf_counter()
     video_embs, valid_pool_ids = load_video_embeddings(
         pool_video_ids, args.cache_dir, args.dataset)
+    video_embedding_load_time_s = time.perf_counter() - t0
     print(f"Loaded {len(valid_pool_ids)} video embeddings, dim={video_embs.shape[1]}")
+    print(f"Video embeddings loaded in {video_embedding_load_time_s:.2f}s")
 
     vid_to_pool_idx = {vid: i for i, vid in enumerate(valid_pool_ids)}
 
@@ -447,31 +827,54 @@ def main():
 
     # 6. Build indices and evaluate.
     search_k = max(100, args.num_candidates)
-    index_types = ['flat', 'hnsw', 'ivf'] if args.index_type == 'all' else [args.index_type]
+    index_types = list(SUPPORTED_INDEX_TYPES) if args.index_type == 'all' else [args.index_type]
     all_results = {}
+    index_artifacts = {}
 
     for idx_type in index_types:
         print(f"\n--- {idx_type.upper()} Index ---")
         t0 = time.perf_counter()
-        if idx_type == 'flat':
-            index = build_flat_index(video_embs)
-        elif idx_type == 'hnsw':
-            index = build_hnsw_index(video_embs, M=args.hnsw_m,
-                                     ef_search=args.hnsw_ef_search)
-        elif idx_type == 'ivf':
-            index = build_ivf_index(video_embs, nlist=args.ivf_nlist,
-                                    nprobe=args.ivf_nprobe)
+        index = build_index(video_embs, idx_type, args)
         build_time = time.perf_counter() - t0
         print(f"Index built in {build_time:.2f}s ({index.ntotal} vectors)")
+        index_path = index_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+        meta_path = index_meta_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+        id_map_path = index_id_map_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+        save_index_artifacts(
+            index,
+            index_path,
+            meta_path,
+            id_map_path,
+            idx_type,
+            args,
+            valid_pool_ids,
+            video_embedding_load_time_s,
+            build_time,
+        )
+        print(f"Offline structure saved to: {index_path}")
+        del index
+        saved_pool_ids = load_saved_id_map(id_map_path)
+        index_artifacts[idx_type] = {
+            'structure_path': index_path,
+            'metadata_path': meta_path,
+            'id_map_path': id_map_path,
+        }
 
         if args.per_query_timing:
             metrics, retrieved, distances, per_query_timings = search_per_query(
-                valid_captions, clip_model, tokenizer, device, index,
-                gt_indices, search_k, args.num_warmup)
+                valid_captions, clip_model, tokenizer, device, index_path,
+                saved_pool_ids,
+                idx_type, args, gt_indices, search_k, args.num_warmup)
         else:
+            t0 = time.perf_counter()
+            structure = load_saved_structure(index_path, idx_type)
+            structure_load_time_s = time.perf_counter() - t0
             metrics, retrieved, distances, per_query_timings = search_batched(
-                query_embs, index, gt_indices, search_k)
+                query_embs, structure, saved_pool_ids, idx_type, args, gt_indices, search_k)
+            metrics['index_load_time_s'] = float(structure_load_time_s)
+            metrics['structure_load_time_s'] = float(structure_load_time_s)
 
+        metrics['video_embedding_load_time_s'] = float(video_embedding_load_time_s)
         metrics['build_time_s'] = build_time
         all_results[idx_type] = metrics
 
@@ -481,19 +884,24 @@ def main():
         if args.per_query_timing:
             print(f"Encode/q: {metrics['encode_time_per_query_ms_mean']:.2f} +/- "
                   f"{metrics['encode_time_per_query_ms_std']:.2f} ms; "
+                  f"Video load/q: {metrics['video_load_time_per_query_ms_mean']:.2f} +/- "
+                  f"{metrics['video_load_time_per_query_ms_std']:.2f} ms; "
                   f"Search/q: {metrics['search_time_per_query_ms_mean']:.2f} +/- "
-                  f"{metrics['search_time_per_query_ms_std']:.2f} ms")
+                  f"{metrics['search_time_per_query_ms_std']:.2f} ms; "
+                  f"Online total/q: {metrics['online_time_per_query_ms_mean']:.2f} +/- "
+                  f"{metrics['online_time_per_query_ms_std']:.2f} ms")
         else:
             print(f"Search: {metrics['search_time_total_s']:.4f}s "
                   f"({metrics['queries_per_sec']:.0f} q/s), "
-                  f"Build: {build_time:.2f}s")
+                  f"Build: {build_time:.2f}s, "
+                  f"Structure load: {metrics['structure_load_time_s']:.4f}s")
 
         cand_filename = (f"{args.dataset}_ann_{idx_type}"
                          f"_{args.num_candidates}_candidates"
                          f"_t{args.setting}.json")
         cand_path = os.path.join(args.candidate_dir, cand_filename)
         save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
-                            valid_pool_ids, args.num_candidates, metrics, args,
+                            saved_pool_ids, args.num_candidates, metrics, args,
                             idx_type, cand_path,
                             per_query_timings=per_query_timings)
 
@@ -510,7 +918,9 @@ def main():
             'num_candidates': args.num_candidates,
             'num_queries': len(valid_captions),
             'pool_size': len(valid_pool_ids),
+            'video_embedding_load_time_s': float(video_embedding_load_time_s),
             'per_query_timing': args.per_query_timing,
+            'index_artifacts': index_artifacts,
             'results': {k: {mk: float(mv) for mk, mv in v.items()}
                         for k, v in all_results.items()},
         }, f, indent=2)
@@ -524,24 +934,43 @@ def main():
         if args.per_query_timing:
             w.writerow(['index_type', 'R@1', 'R@5', 'R@10', 'MedR', 'MeanR',
                         'enc_ms_mean', 'enc_ms_std',
-                        'search_ms_mean', 'search_ms_std', 'build_s'])
+                        'index_load_ms_mean', 'index_load_ms_std',
+                        'video_load_ms_mean', 'video_load_ms_std',
+                        'video_pool_ms_mean', 'video_pool_ms_std',
+                        'similarity_ms_mean', 'similarity_ms_std',
+                        'search_ms_mean', 'search_ms_std',
+                        'online_total_ms_mean', 'online_total_ms_std',
+                        'video_load_s', 'build_s'])
             for idx_type, m in all_results.items():
                 w.writerow([idx_type, f"{m['R@1']:.2f}", f"{m['R@5']:.2f}",
                             f"{m['R@10']:.2f}", f"{m['MedR']:.1f}",
                             f"{m['MeanR']:.1f}",
                             f"{m['encode_time_per_query_ms_mean']:.3f}",
                             f"{m['encode_time_per_query_ms_std']:.3f}",
+                            f"{m['index_load_time_per_query_ms_mean']:.3f}",
+                            f"{m['index_load_time_per_query_ms_std']:.3f}",
+                            f"{m['video_load_time_per_query_ms_mean']:.3f}",
+                            f"{m['video_load_time_per_query_ms_std']:.3f}",
+                            f"{m['video_pool_time_per_query_ms_mean']:.3f}",
+                            f"{m['video_pool_time_per_query_ms_std']:.3f}",
+                            f"{m['similarity_time_per_query_ms_mean']:.3f}",
+                            f"{m['similarity_time_per_query_ms_std']:.3f}",
                             f"{m['search_time_per_query_ms_mean']:.3f}",
                             f"{m['search_time_per_query_ms_std']:.3f}",
+                            f"{m['online_time_per_query_ms_mean']:.3f}",
+                            f"{m['online_time_per_query_ms_std']:.3f}",
+                            f"{m['video_embedding_load_time_s']:.2f}",
                             f"{m['build_time_s']:.2f}"])
         else:
             w.writerow(['index_type', 'R@1', 'R@5', 'R@10', 'MedR', 'MeanR',
-                        'search_time_s', 'build_s'])
+                        'index_load_s', 'search_time_s', 'video_load_s', 'build_s'])
             for idx_type, m in all_results.items():
                 w.writerow([idx_type, f"{m['R@1']:.2f}", f"{m['R@5']:.2f}",
                             f"{m['R@10']:.2f}", f"{m['MedR']:.1f}",
                             f"{m['MeanR']:.1f}",
+                            f"{m['index_load_time_s']:.4f}",
                             f"{m['search_time_total_s']:.4f}",
+                            f"{m['video_embedding_load_time_s']:.2f}",
                             f"{m['build_time_s']:.2f}"])
     print(f"CSV saved to: {csv_file}")
 

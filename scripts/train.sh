@@ -17,9 +17,6 @@ FIT_EPOCHS="${FIT_EPOCHS:-2}"
 SAVE_PATH="${SAVE_PATH:-output/GRDR}"
 EXP_NAME="${EXP_NAME:-$DATASET}"
 SEED="${SEED:-42}"
-WEIGHT_DECAY="${WEIGHT_DECAY:-0.0}"
-ENCODER_LR_SCALE_BASE="${ENCODER_LR_SCALE_BASE:-1.0}"
-LAST_CODEBOOK_LR_SCALE="${LAST_CODEBOOK_LR_SCALE:-10.0}"
 ENABLE_FIT="${ENABLE_FIT:-1}"
 USE_PSEUDO_QUERIES="${USE_PSEUDO_QUERIES:-0}"
 
@@ -52,8 +49,5 @@ python run.py \
     --save_path "$SAVE_PATH" \
     --exp_name "$EXP_NAME" \
     --seed "$SEED" \
-    --weight_decay "$WEIGHT_DECAY" \
-    --encoder_lr_scale_base "$ENCODER_LR_SCALE_BASE" \
-    --last_codebook_lr_scale "$LAST_CODEBOOK_LR_SCALE" \
     "${fit_flag[@]}" \
     "${pseudo_query_flag[@]}"

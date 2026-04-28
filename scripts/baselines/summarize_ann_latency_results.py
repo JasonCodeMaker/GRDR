@@ -6,7 +6,7 @@ from pathlib import Path
 
 DATASETS = ("msrvtt", "actnet", "didemo", "lsmdc")
 SETTINGS = (1, 2)
-INDEX_TYPES = ("flat", "hnsw", "ivf")
+INDEX_TYPES = ("hnsw", "ivf")
 K_BY_PAIR = {
     ("msrvtt", 1): 100, ("msrvtt", 2): 100,
     ("actnet", 1): 100, ("actnet", 2): 100,
@@ -24,6 +24,9 @@ COMPACT_FIELDS = [
 ]
 STAGE2_FIELDS = [
     "dataset",
+    "setting",
+    "index_type",
+    "k",
     "retrieval_mode",
     "candidate_file",
     "num_queries",
@@ -56,8 +59,14 @@ def load_stage1_results(stage1_root: Path, dataset: str, setting: int, index_typ
     return load_json(path)
 
 
-def load_stage2_summary(stage2_root: Path, dataset: str):
-    path = stage2_root / dataset / f"perquery_{dataset}_summary.json"
+def load_stage2_summary(stage2_root: Path, dataset: str, setting: int, index_type: str):
+    path = (
+        stage2_root /
+        index_type /
+        dataset /
+        f"setting{setting}" /
+        f"perquery_{dataset}_setting{setting}_{index_type}_summary.json"
+    )
     payload = load_json(path)
     if "summary" not in payload:
         raise ValueError(f"Stage 2 summary JSON missing 'summary': {path}")
@@ -88,10 +97,30 @@ def write_csv(path: Path, rows, fieldnames):
 def build_stage2_rows(stage2_root: Path):
     rows = []
     for dataset in DATASETS:
-        summary = load_stage2_summary(stage2_root, dataset)
-        row = {field: maybe_round(summary.get(field)) for field in STAGE2_FIELDS}
-        rows.append(row)
+        for setting in SETTINGS:
+            for index_type in INDEX_TYPES:
+                summary = load_stage2_summary(stage2_root, dataset, setting, index_type)
+                row = {
+                    "dataset": dataset,
+                    "setting": setting,
+                    "index_type": index_type,
+                    "k": K_BY_PAIR[(dataset, setting)],
+                }
+                for field in STAGE2_FIELDS:
+                    if field in row:
+                        continue
+                    row[field] = maybe_round(summary.get(field))
+                rows.append(row)
     return rows
+
+
+def get_stage1_online_total_ms(stage1_metrics):
+    if "online_time_per_query_ms_mean" in stage1_metrics:
+        return float(stage1_metrics["online_time_per_query_ms_mean"])
+    return (
+        float(stage1_metrics["encode_time_per_query_ms_mean"]) +
+        float(stage1_metrics["search_time_per_query_ms_mean"])
+    )
 
 
 def main():
@@ -103,25 +132,24 @@ def main():
     parser.add_argument("--compact-output", type=Path)
     args = parser.parse_args()
 
-    stage2_by_dataset = {
-        dataset: load_stage2_summary(args.stage2_root, dataset)
+    stage2_by_key = {
+        (dataset, setting, index_type): load_stage2_summary(args.stage2_root, dataset, setting, index_type)
         for dataset in DATASETS
+        for setting in SETTINGS
+        for index_type in INDEX_TYPES
     }
 
     rows = []
     for dataset in DATASETS:
-        stage2 = stage2_by_dataset[dataset]
         for setting in SETTINGS:
             k = K_BY_PAIR[(dataset, setting)]
             for index_type in INDEX_TYPES:
+                stage2 = stage2_by_key[(dataset, setting, index_type)]
                 stage1_payload = load_stage1_results(
                     args.stage1_root, dataset, setting, index_type
                 )
                 stage1 = stage1_payload["results"][index_type]
-                stage1_total_ms_mean = (
-                    float(stage1["encode_time_per_query_ms_mean"]) +
-                    float(stage1["search_time_per_query_ms_mean"])
-                )
+                stage1_total_ms_mean = get_stage1_online_total_ms(stage1)
                 stage2_total_ms_mean = float(stage2["total_ms_mean"])
                 row = {
                     "dataset": dataset,
@@ -132,10 +160,19 @@ def main():
                     "stage1_num_queries": stage1_payload["num_queries"],
                     "stage1_text_encode_ms_mean": maybe_round(stage1["encode_time_per_query_ms_mean"]),
                     "stage1_text_encode_ms_std": maybe_round(stage1["encode_time_per_query_ms_std"]),
+                    "stage1_index_load_ms_mean": maybe_round(stage1.get("index_load_time_per_query_ms_mean")),
+                    "stage1_index_load_ms_std": maybe_round(stage1.get("index_load_time_per_query_ms_std")),
                     "stage1_search_ms_mean": maybe_round(stage1["search_time_per_query_ms_mean"]),
                     "stage1_search_ms_std": maybe_round(stage1["search_time_per_query_ms_std"]),
+                    "stage1_online_total_ms_mean": maybe_round(stage1_total_ms_mean),
+                    "stage1_online_total_ms_std": maybe_round(stage1.get("online_time_per_query_ms_std")),
                     "stage1_total_ms_mean": maybe_round(stage1_total_ms_mean),
+                    "stage1_offline_video_load_s": maybe_round(stage1_payload.get("video_embedding_load_time_s")),
                     "stage1_build_s": maybe_round(stage1["build_time_s"]),
+                    "stage1_offline_total_s": maybe_round(
+                        float(stage1_payload.get("video_embedding_load_time_s", 0.0)) +
+                        float(stage1["build_time_s"])
+                    ),
                     "stage2_candidate_file": stage2["candidate_file"],
                     "stage2_candidate_count_mean": maybe_round(stage2["candidate_count_mean"]),
                     "stage2_candidate_count_min": maybe_round(stage2["candidate_count_min"]),

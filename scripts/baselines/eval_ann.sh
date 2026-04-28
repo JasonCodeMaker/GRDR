@@ -9,13 +9,13 @@ source_conda_sh
 
 DEVICE="${DEVICE:-0}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
-INDEX_TYPE="${INDEX_TYPE:-flat}"
+INDEX_TYPE="${INDEX_TYPE:-hnsw}"
 OUTPUT_DIR="${OUTPUT_DIR:-output/ann_baseline}"
 CANDIDATE_DIR="${CANDIDATE_DIR:-candidates}"
 RUN_STAGE1="${RUN_STAGE1:-1}"
 RUN_STAGE2="${RUN_STAGE2:-1}"
 PER_QUERY_TIMING="${PER_QUERY_TIMING:-1}"
-NUM_WARMUP="${NUM_WARMUP:-10}"
+NUM_WARMUP="${NUM_WARMUP:-0}"
 
 # ANN baseline uses 100 candidates in both settings for all datasets.
 DEFAULT_PAIRS=(
