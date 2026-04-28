@@ -43,6 +43,12 @@ def parse_args():
     parser.add_argument('--w1_rq_loss', type=float, default=0, help='Phase 1 RQ quantization loss weight')
     parser.add_argument('--w1_route_agree_loss', type=float, default=0,
                         help='Phase 1 semantic-ID route agreement loss weight')
+    parser.add_argument('--w1_bucket_route_loss', type=float, default=0,
+                        help='Phase 1 bucket-aware semantic-ID route loss weight')
+    parser.add_argument('--w1_video_rank_loss', type=float, default=0,
+                        help='Phase 1 bucket-penalized video-route ranking loss weight')
+    parser.add_argument('--w1_expanded_size_loss', type=float, default=0,
+                        help='Phase 1 expected expanded bucket-size regularization weight')
 
     # Loss weights - Phase 2 (Main Training): ce_loss + code_loss + cl_dd_loss + rq_loss
     parser.add_argument('--w2_cl_loss', type=float, default=0.2, help='Phase 2 contrastive loss weight')
@@ -52,6 +58,12 @@ def parse_args():
     parser.add_argument('--w2_rq_loss', type=float, default=0.3, help='Phase 2 RQ quantization loss weight')
     parser.add_argument('--w2_route_agree_loss', type=float, default=0.05,
                         help='Phase 2 semantic-ID route agreement loss weight')
+    parser.add_argument('--w2_bucket_route_loss', type=float, default=0,
+                        help='Phase 2 bucket-aware semantic-ID route loss weight')
+    parser.add_argument('--w2_video_rank_loss', type=float, default=0,
+                        help='Phase 2 bucket-penalized video-route ranking loss weight')
+    parser.add_argument('--w2_expanded_size_loss', type=float, default=0,
+                        help='Phase 2 expected expanded bucket-size regularization weight')
 
     # Loss weights - Phase 2 (Optional): Fit phase
     parser.add_argument('--enable_fit', action=argparse.BooleanOptionalAction, default=True, help='Enable fit phase')
@@ -62,6 +74,21 @@ def parse_args():
     parser.add_argument('--w3_rq_loss', type=float, default=0, help='Phase fit RQ quantization loss weight')
     parser.add_argument('--w3_route_agree_loss', type=float, default=0,
                         help='Phase fit semantic-ID route agreement loss weight')
+    parser.add_argument('--w3_bucket_route_loss', type=float, default=0,
+                        help='Phase fit bucket-aware semantic-ID route loss weight')
+    parser.add_argument('--w3_video_rank_loss', type=float, default=0,
+                        help='Phase fit bucket-penalized video-route ranking loss weight')
+    parser.add_argument('--w3_expanded_size_loss', type=float, default=0,
+                        help='Phase fit expected expanded bucket-size regularization weight')
+    parser.add_argument('--route_agree_stopgrad_video', action=argparse.BooleanOptionalAction,
+                        default=False,
+                        help='Detach video-side logits for route-aware losses')
+    parser.add_argument('--route_bucket_gamma', type=float, default=1.0,
+                        help='Inverse-bucket weighting exponent for bucket-aware route loss')
+    parser.add_argument('--video_rank_beta', type=float, default=0.5,
+                        help='Bucket-size penalty coefficient for video-rank loss')
+    parser.add_argument('--route_bucket_default_size', type=float, default=1.0,
+                        help='Fallback bucket size when a sample route is missing from saved bucket stats')
 
     # Dataset arguments (for video-text integration)
     parser.add_argument('--dataset', type=str, default='msrvtt',
