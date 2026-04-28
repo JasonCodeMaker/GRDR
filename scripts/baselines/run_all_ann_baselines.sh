@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 source scripts/_common.sh
 
-INDEX_TYPES_STR="${INDEX_TYPES:-flat hnsw ivf}"
+INDEX_TYPES_STR="${INDEX_TYPES:-hnsw ivf}"
 read -r -a INDEX_TYPES_ARR <<<"$INDEX_TYPES_STR"
 OUTPUT_ROOT="${OUTPUT_ROOT:-output/ann_baseline}"
 SUMMARY_CSV="${SUMMARY_CSV:-$OUTPUT_ROOT/ann_stage1_stage2_summary.csv}"

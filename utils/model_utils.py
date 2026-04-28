@@ -6,6 +6,7 @@ import random
 
 import numpy as np
 import torch
+import torch.distributed as dist
 from torch import nn, Tensor
 from torch.optim import AdamW
 from peft import TaskType, LoraConfig, get_peft_model
@@ -34,10 +35,15 @@ def sinkhorn_raw(out: Tensor, epsilon: float,
     K = Q.shape[0]  # how many prototypes
     # make the matrix sums to 1
     sum_Q = torch.clamp(torch.sum(Q), min=1e-5)
+    if use_distrib_train:
+        B *= dist.get_world_size()
+        dist.all_reduce(sum_Q)
     Q /= sum_Q
     for it in range(sinkhorn_iterations):
         # normalize each row: total weight per prototype must be 1/K
         sum_of_rows = torch.clamp(torch.sum(Q, dim=1, keepdim=True), min=1e-5)
+        if use_distrib_train:
+            dist.all_reduce(sum_of_rows)
         Q /= sum_of_rows
         Q /= K
         # normalize each column: total weight per sample must be 1/B
@@ -47,7 +53,7 @@ def sinkhorn_raw(out: Tensor, epsilon: float,
     return Q.t()
 
 
-def get_optimizer(model, lr, code_length=None, encoder_lr_scale=1.0, weight_decay=0.0, last_codebook_lr_scale=10.0):
+def get_optimizer(model, lr, code_length=None, encoder_lr_scale=1.0):
     """
     Create optimizer with special handling for different parameter groups.
 
@@ -55,9 +61,7 @@ def get_optimizer(model, lr, code_length=None, encoder_lr_scale=1.0, weight_deca
         model: Model instance
         lr: Base learning rate
         code_length: Number of RQ layers (if None, extracted from model)
-        encoder_lr_scale: Learning rate multiplier for VideoRQVAE encoder
-        weight_decay: Weight decay applied to decayed parameter groups
-        last_codebook_lr_scale: Learning rate multiplier for the newest codebook layer
+        encoder_lr_scale: Learning rate multiplier for VideoRQVAE encoder (default 0.6)
     """
     if code_length is None:
         code_length = model.code_length if hasattr(model, 'code_length') else 1
@@ -81,32 +85,25 @@ def get_optimizer(model, lr, code_length=None, encoder_lr_scale=1.0, weight_deca
 
     optimizer_grouped_parameters = [
         {
-            # VideoRQVAE encoder parameters with reduced LR and decay
+            # VideoRQVAE encoder parameters with reduced LR (60%)
             "params": [p for n, p in model.named_parameters()
-                      if p.requires_grad and is_encoder_param(n) and n in decay_parameters],
-            "weight_decay": weight_decay,
-            "lr": lr * encoder_lr_scale
-        },
-        {
-            # VideoRQVAE encoder parameters exempt from decay
-            "params": [p for n, p in model.named_parameters()
-                      if p.requires_grad and is_encoder_param(n) and n not in decay_parameters],
+                      if p.requires_grad and is_encoder_param(n)],
             "weight_decay": 0.0,
             "lr": lr * encoder_lr_scale
         },
         {
-            # Last codebook layer gets a separately tunable learning rate
+            # Last codebook layer gets 10× higher learning rate
             "params": [p for n, p in model.named_parameters()
                       if p.requires_grad and is_last_codebook(n) and not is_encoder_param(n)],
             "weight_decay": 0.0,
-            "lr": lr * last_codebook_lr_scale
+            "lr": lr * 10
         },
         {
             # Decay parameters (excluding encoder and last codebook)
             "params": [p for n, p in model.named_parameters()
                       if p.requires_grad and n in decay_parameters
                       and not is_encoder_param(n) and not is_last_codebook(n)],
-            "weight_decay": weight_decay,
+            "weight_decay": 0.0,
         },
         {
             # Non-decay parameters (excluding encoder and last codebook)

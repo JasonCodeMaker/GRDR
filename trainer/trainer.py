@@ -4,7 +4,9 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 import wandb
+from torch import Tensor
 from tqdm import tqdm
 from accelerate import Accelerator
 from transformers import AutoTokenizer, get_constant_schedule
@@ -23,8 +25,21 @@ class OurTrainer:
     """Trainer class with static methods for training and testing steps."""
 
     @staticmethod
+    def _gather_tensor(t: Tensor, local_rank):
+        all_tensors = [torch.empty_like(t) for _ in range(dist.get_world_size())]
+        dist.all_gather(all_tensors, t)
+        all_tensors[local_rank] = t
+        return all_tensors
+
+    @staticmethod
+    def gather_tensors(t: Tensor, local_rank=None):
+        if local_rank is None:
+            local_rank = dist.get_rank()
+        return torch.cat(OurTrainer._gather_tensor(t, local_rank))
+
+    @staticmethod
     @torch.no_grad()
-    def test_step(model: GRDR, batch):
+    def test_step(model: GRDR, batch, use_constraint=None):
         """
         Test step compatible with VideoTextDataset batch structure.
 
@@ -39,7 +54,8 @@ class OurTrainer:
             input_ids=batch['caption_tokens'],
             attention_mask=batch['attention_mask'],
             return_code=False,
-            return_quantized_embedding=False
+            return_quantized_embedding=False,
+            use_constraint=use_constraint
         )
 
         # Video path: video features -> VideoRQVAE with token selection
@@ -47,13 +63,14 @@ class OurTrainer:
             video_features=batch['video_features'],
             token_idx=batch['token_idx'],
             return_code=False,
-            return_quantized_embedding=False
+            return_quantized_embedding=False,
+            use_constraint=use_constraint
         )
 
         return query_outputs, vid_outputs
 
     @staticmethod
-    def simple_train_step(model: GRDR, batch):
+    def simple_train_step(model: GRDR, batch, gathered=None):
         """
         Simple train step compatible with VideoTextDataset batch structure.
         Uses only commitment loss on query probability.
@@ -80,7 +97,7 @@ class OurTrainer:
         )
 
     @staticmethod
-    def train_step(model: GRDR, batch, current_layer):
+    def train_step(model: GRDR, batch, current_layer, gathered=None, loss_weights=None):
         """
         Train step compatible with VideoTextDataset batch structure.
 
@@ -100,7 +117,7 @@ class OurTrainer:
             aux_ids=batch['aux_ids'],
             return_code=True,
             return_quantized_embedding=True,
-            return_residual_layer=model.code_length
+            return_residual_layer= model.code_length if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.module.code_length - 1
         )
 
         # Query path: text caption -> T5 encoder
@@ -121,8 +138,11 @@ class OurTrainer:
         query_prob = query_outputs.probability
         vid_prob = vid_outputs.probability
 
+        if gathered is None:
+            gathered = dist.is_initialized()
+
         # Contrastive loss: query vs doc
-        cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds)
+        cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds, gathered=False)
 
         # Video Reconstruction Loss
         L2_video_features = F.normalize(video_features.detach(), p=2, dim=-1, eps=1e-12)
@@ -137,7 +157,10 @@ class OurTrainer:
         # Code prediction loss (multi-layer)
         code_loss = 0
         if query_outputs.code_logits is not None and vid_outputs.code_logits is not None:
-            code_number = model.code_number
+            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+                code_number = model.module.code_number
+            else:
+                code_number = model.code_number
 
             prior_codes = batch['ids'][:, 1:].contiguous().view(-1)
             query_code_loss = F.cross_entropy(
@@ -156,21 +179,106 @@ class OurTrainer:
         # VideoRQVAE quantization loss
         rq_loss = vid_outputs.rq_loss if vid_outputs.rq_loss is not None else 0
 
+        # Route agreement loss: align query/video code distributions as an
+        # in-batch retrieval objective over the shared semantic-ID codebooks.
+        route_agree_loss = 0
+        if loss_weights is not None and loss_weights.get('route_agree_loss', 0) != 0:
+            route_agree_loss = OurTrainer.compute_route_agreement_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids')
+            )
+
         return dict(
             cl_loss=cl_loss,
             ce_loss=ce_loss,
             code_loss=code_loss,
             cl_dd_loss=cl_dd_loss,
-            rq_loss=rq_loss
+            rq_loss=rq_loss,
+            route_agree_loss=route_agree_loss
         )
 
     @staticmethod
-    def compute_contrastive_loss(query_embeds, vid_embeds):
-        effective_bsz = query_embeds.size(0)
+    def compute_contrastive_loss(query_embeds, vid_embeds, gathered=True):
+        if gathered:
+            gathered_query_embeds = OurTrainer.gather_tensors(query_embeds)
+            gathered_doc_embeds = OurTrainer.gather_tensors(vid_embeds)
+        else:
+            gathered_query_embeds = query_embeds
+            gathered_doc_embeds = vid_embeds
+        effective_bsz = gathered_query_embeds.size(0)
         labels = torch.arange(effective_bsz, dtype=torch.long, device=query_embeds.device)
-        similarities = torch.matmul(query_embeds, vid_embeds.transpose(0, 1))
+        similarities = torch.matmul(gathered_query_embeds, gathered_doc_embeds.transpose(0, 1))
         co_loss = F.cross_entropy(similarities, labels)
         return co_loss
+
+    @staticmethod
+    def _base_video_id(video_id):
+        """Normalize caption-suffixed sample ids back to base video ids."""
+        if not isinstance(video_id, str):
+            return str(video_id)
+        if '_' in video_id:
+            prefix, suffix = video_id.rsplit('_', 1)
+            if suffix.isdigit() and len(suffix) <= 2:
+                return prefix
+        return video_id
+
+    @staticmethod
+    def _positive_mask(video_ids, batch_size, device):
+        if not video_ids:
+            return torch.eye(batch_size, dtype=torch.bool, device=device)
+        if len(video_ids) != batch_size:
+            raise ValueError(
+                f"Expected {batch_size} video ids for route agreement loss, got {len(video_ids)}"
+            )
+        base_ids = [OurTrainer._base_video_id(video_id) for video_id in video_ids]
+        return torch.tensor(
+            [[left == right for right in base_ids] for left in base_ids],
+            dtype=torch.bool,
+            device=device
+        )
+
+    @staticmethod
+    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, eps=1e-8):
+        """
+        Multi-positive in-batch retrieval loss in semantic-ID distribution space.
+
+        Args:
+            query_logits: [B, L, C] query decoder logits over shared codebooks.
+            video_logits: [B, L, C] video tokenizer logits over the same codebooks.
+            video_ids: optional list of sample ids; rows with the same base video id
+                are treated as positives to avoid false negatives from duplicate captions.
+
+        Returns:
+            Scalar NLL where each query retrieves matching video rows by summing
+            log per-level code-distribution agreement.
+        """
+        if query_logits is None or video_logits is None:
+            raise ValueError("Route agreement loss requires query and video logits")
+        if query_logits.dim() != 3 or video_logits.dim() != 3:
+            raise ValueError(
+                "Route agreement logits must be [batch, code_length, code_number], "
+                f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
+            )
+        if query_logits.shape != video_logits.shape:
+            raise ValueError(
+                "Route agreement query/video logits must have identical shapes, "
+                f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
+            )
+
+        batch_size, code_length, _ = query_logits.shape
+        scores = query_logits.new_zeros(batch_size, batch_size)
+        for layer_idx in range(code_length):
+            query_probs = F.softmax(query_logits[:, layer_idx], dim=-1)
+            video_probs = F.softmax(video_logits[:, layer_idx], dim=-1)
+            agreement = torch.matmul(query_probs, video_probs.transpose(0, 1))
+            scores = scores + torch.log(agreement.clamp_min(eps))
+
+        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+        positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
+        log_pos = torch.logsumexp(positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
 
 
 def build_loss_weights(config, phase):
@@ -190,7 +298,8 @@ def build_loss_weights(config, phase):
         'ce_loss': config.get(f'{prefix}ce_loss', 0),
         'code_loss': config.get(f'{prefix}code_loss', 0),
         'cl_dd_loss': config.get(f'{prefix}cl_dd_loss', 0),
-        'rq_loss': config.get(f'{prefix}rq_loss', 0)
+        'rq_loss': config.get(f'{prefix}rq_loss', 0),
+        'route_agree_loss': config.get(f'{prefix}route_agree_loss', 0)
     }
 
 
@@ -245,7 +354,7 @@ def train(config, global_step=0):
                                                     torch_dtype=torch_dtype,
                                                     config=t5_config)
     model = GRDR(model=t5, code_length=code_length,
-                 zero_inp=False, code_number=code_num,
+                 use_constraint=False, sk_epsilon=1, zero_inp=False, code_number=code_num,
                  videorqvae=videorqvae)
 
     if prev_model is not None:
@@ -262,6 +371,11 @@ def train(config, global_step=0):
     # Print total model parameters in millions
     total_params = sum(p.numel() for p in model.parameters())
     accelerator.print(f'Total model parameters: {total_params / 1e6:.2f}M')
+
+    if config.get('codebook_init', None) is not None:
+        import pickle
+        with open(config.get('codebook_init'), 'rb') as f:
+            model.code_embedding[-1].weight.data = torch.tensor(pickle.load(f))
 
     # Phase-specific freezing:
     if config.get('loss_w') == 3:
@@ -363,19 +477,11 @@ def train(config, global_step=0):
     )
     # Calculate encoder LR scale based on loop index
     loop = config.get('loop', 0)
-    encoder_lr_scale_base = config.get('encoder_lr_scale_base', 1.0)
-    encoder_lr_scale = encoder_lr_scale_base ** loop
+    encoder_lr_scale = 1.0 ** loop
     accelerator.print(f'Loop {loop}: Encoder LR scale = {encoder_lr_scale:.4f} (base_lr={lr}, encoder_lr={lr * encoder_lr_scale:.2e})')
 
     # Use get_optimizer to apply custom learning rates
-    optimizer = get_optimizer(
-        model,
-        lr=lr,
-        code_length=code_length,
-        encoder_lr_scale=encoder_lr_scale,
-        weight_decay=config.get('weight_decay', 0.0),
-        last_codebook_lr_scale=config.get('last_codebook_lr_scale', 10.0),
-    )
+    optimizer = get_optimizer(model, lr=lr, code_length=code_length, encoder_lr_scale=encoder_lr_scale)
     model, optimizer, data_loader = accelerator.prepare(model, optimizer, data_loader)
     scheduler = get_constant_schedule(optimizer)
 
@@ -406,7 +512,7 @@ def train(config, global_step=0):
             step += 1
             global_step += 1
             with accelerator.accumulate(model):
-                losses = OurTrainer.train_step(model, batch, current_layer=loop)
+                losses = OurTrainer.train_step(model, batch, current_layer=loop, loss_weights=loss_w)
                 loss = sum([v * loss_w[k] for k, v in losses.items()])
                 accelerator.backward(loss)
                 accelerator.clip_grad_norm_(model.parameters(), 1.)
@@ -426,7 +532,10 @@ def train(config, global_step=0):
 
         # Evaluation at end of epoch
         is_pretrain = (loss_w.get('ce_loss', 0) == 0)
-        _, current_metric = eval_retrieval(model, dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step,
+        eval_batch_size = config.get('eval_batch_size') or batch_size
+        if eval_batch_size != batch_size:
+            accelerator.print(f'Evaluation batch size: {eval_batch_size} (training batch size: {batch_size})')
+        _, current_metric = eval_retrieval(model, dataset, val_dataset, test_dataset, tokenizer, eval_batch_size, accelerator, global_step,
                                            is_pretrain=is_pretrain, code_length=code_length, drift_monitor=drift_monitor,
                                            selection_num_candidates=config.get('num_candidates', 10),
                                            setting=config.get('setting', 1))

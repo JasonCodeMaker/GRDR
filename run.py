@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from models.grdr import GRDR, Codebook, QuantizeOutput, VideoOutput
 from trainer.trainer import OurTrainer, train, build_loss_weights
-from trainer.evaluator import test
+from trainer.evaluator import test, test_dr
 from utils.model_utils import seed_everything
 
 
@@ -41,6 +41,8 @@ def parse_args():
     parser.add_argument('--w1_code_loss', type=float, default=0.5, help='Phase 1 code prediction loss weight')
     parser.add_argument('--w1_cl_dd_loss', type=float, default=0, help='Phase 1 video reconstruction loss weight')
     parser.add_argument('--w1_rq_loss', type=float, default=0, help='Phase 1 RQ quantization loss weight')
+    parser.add_argument('--w1_route_agree_loss', type=float, default=0,
+                        help='Phase 1 semantic-ID route agreement loss weight')
 
     # Loss weights - Phase 2 (Main Training): ce_loss + code_loss + cl_dd_loss + rq_loss
     parser.add_argument('--w2_cl_loss', type=float, default=0.2, help='Phase 2 contrastive loss weight')
@@ -48,6 +50,8 @@ def parse_args():
     parser.add_argument('--w2_code_loss', type=float, default=0.8, help='Phase 2 code prediction loss weight')
     parser.add_argument('--w2_cl_dd_loss', type=float, default=0.1, help='Phase 2 video reconstruction loss weight')
     parser.add_argument('--w2_rq_loss', type=float, default=0.3, help='Phase 2 RQ quantization loss weight')
+    parser.add_argument('--w2_route_agree_loss', type=float, default=0.05,
+                        help='Phase 2 semantic-ID route agreement loss weight')
 
     # Loss weights - Phase 2 (Optional): Fit phase
     parser.add_argument('--enable_fit', action=argparse.BooleanOptionalAction, default=True, help='Enable fit phase')
@@ -56,10 +60,12 @@ def parse_args():
     parser.add_argument('--w3_code_loss', type=float, default=1, help='Phase fit code prediction loss weight')
     parser.add_argument('--w3_cl_dd_loss', type=float, default=0, help='Phase fit video reconstruction loss weight')
     parser.add_argument('--w3_rq_loss', type=float, default=0, help='Phase fit RQ quantization loss weight')
+    parser.add_argument('--w3_route_agree_loss', type=float, default=0,
+                        help='Phase fit semantic-ID route agreement loss weight')
 
     # Dataset arguments (for video-text integration)
     parser.add_argument('--dataset', type=str, default='msrvtt',
-                       choices=['msrvtt', 'actnet', 'didemo', 'lsmdc'],
+                       choices=['msrvtt', 'actnet', 'didemo', 'lsmdc', 'panda'],
                        help='Dataset name for video-text features')
     parser.add_argument('--features_root', type=str, default='dataset/features',
                        help='Root directory for InternVideo2 features')
@@ -76,6 +82,8 @@ def parse_args():
                         help='Checkpoint path for evaluation')
     parser.add_argument('--num_candidates', type=int, default=50,
                        help='Number of top candidates to retrieve per query for JSON export')
+    parser.add_argument('--eval_batch_size', type=int, default=None,
+                       help='Batch size for retrieval evaluation; defaults to training batch size')
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                        help='Setting: 1=test only pool, 2=train+test combined pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
@@ -84,11 +92,6 @@ def parse_args():
     parser.add_argument('--save_path', type=str, default='output/GRDR')
     parser.add_argument('--exp_name', type=str, default='debug', help='Experiment name for wandb and save path')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
-    parser.add_argument('--weight_decay', type=float, default=0.0, help='Weight decay for decayed parameter groups')
-    parser.add_argument('--encoder_lr_scale_base', type=float, default=1.0,
-                       help='Per-loop decay base for VideoRQVAE encoder LR scale')
-    parser.add_argument('--last_codebook_lr_scale', type=float, default=10.0,
-                       help='Learning rate multiplier for the newest codebook layer')
     parser.add_argument('--device', type=int, default=0, choices=[0, 1],
                        help='GPU device ID to use for training (0 or 1)')
     parser.add_argument('--use_pseudo_queries', action='store_true', default=False,
@@ -134,14 +137,16 @@ def main():
             config['code_length'] = loop + 1
             config['prev_model'] = checkpoint
             config['prev_id'] = f'{checkpoint}.code' if checkpoint is not None else None
-            config['epochs'] = args.pretrain_epochs
+            config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
             checkpoint, global_step = train(config, global_step)
+            test_dr(config, checkpoint)
 
             # Phase 2: Main Training
             config['save_path'] = os.path.join(save_root, f'model-{loop + 1}')
             config['prev_model'] = checkpoint
+            config['codebook_init'] = f'{checkpoint}.kmeans.{args.code_num}'
             config['epochs'] = args.main_epochs
             config['loss_w'] = 2
             config['lr'] = args.main_lr
@@ -149,6 +154,7 @@ def main():
             if args.enable_fit:
                 config['save_path'] = os.path.join(save_root, f'model-{loop+1}-fit')
                 config['prev_model'] = checkpoint
+                config['codebook_init'] = None
                 config['epochs'] = args.fit_epochs
                 config['loss_w'] = 3
                 config['lr'] = args.fit_lr

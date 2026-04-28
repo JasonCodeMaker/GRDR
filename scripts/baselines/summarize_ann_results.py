@@ -6,7 +6,7 @@ from pathlib import Path
 
 DATASETS = ("msrvtt", "actnet", "didemo", "lsmdc")
 SETTINGS = (1, 2)
-INDEX_TYPES = ("flat", "hnsw", "ivf")
+INDEX_TYPES = ("hnsw", "ivf")
 COMPACT_FIELDS = [
     "dataset",
     "setting",
@@ -128,9 +128,18 @@ def main():
                     "stage1_meanr": format_metric(as_float(stage1_metrics["MeanR"])),
                     "stage1_text_encode_ms_mean": format_metric(as_float(stage1_metrics.get("encode_time_per_query_ms_mean"))),
                     "stage1_text_encode_ms_std": format_metric(as_float(stage1_metrics.get("encode_time_per_query_ms_std"))),
+                    "stage1_index_load_ms_mean": format_metric(as_float(stage1_metrics.get("index_load_time_per_query_ms_mean"))),
+                    "stage1_index_load_ms_std": format_metric(as_float(stage1_metrics.get("index_load_time_per_query_ms_std"))),
                     "stage1_search_ms_mean": format_metric(as_float(stage1_metrics.get("search_time_per_query_ms_mean"))),
                     "stage1_search_ms_std": format_metric(as_float(stage1_metrics.get("search_time_per_query_ms_std"))),
+                    "stage1_online_total_ms_mean": format_metric(as_float(stage1_metrics.get("online_time_per_query_ms_mean"))),
+                    "stage1_online_total_ms_std": format_metric(as_float(stage1_metrics.get("online_time_per_query_ms_std"))),
+                    "stage1_offline_video_load_s": format_metric(as_float(stage1.get("video_embedding_load_time_s"))),
                     "stage1_build_s": format_metric(as_float(stage1_metrics["build_time_s"])),
+                    "stage1_offline_total_s": format_metric(
+                        as_float(stage1.get("video_embedding_load_time_s", 0.0)) +
+                        as_float(stage1_metrics["build_time_s"])
+                    ),
                     "stage2_r1": format_metric(as_float(stage2_metrics["R@1"])),
                     "stage2_r5": format_metric(as_float(stage2_metrics["R@5"])),
                     "stage2_r10": format_metric(as_float(stage2_metrics["R@10"])),

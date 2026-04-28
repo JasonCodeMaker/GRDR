@@ -4,10 +4,13 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
 from torch import nn, Tensor
 from tqdm import tqdm
 from transformers.generation.utils import GenerationMixin
 from transformers.modeling_outputs import ModelOutput
+
+from utils.model_utils import sinkhorn_raw
 
 
 @dataclass
@@ -69,7 +72,8 @@ class GRDR(nn.Module, GenerationMixin, ABC):
     base_model_prefix = ""
     _supports_cache_class = False
 
-    def __init__(self, model, code_length=1, zero_inp=False, code_number=10, videorqvae=None):
+    def __init__(self, model, use_constraint: bool, sk_epsilon: float = 0.03, sk_iters: int = 100, code_length=1,
+                 zero_inp=False, code_number=10, videorqvae=None):
         super().__init__()
         self.model = model
         self.config = model.config
@@ -80,6 +84,9 @@ class GRDR(nn.Module, GenerationMixin, ABC):
         self.prepare_inputs_for_generation = model.prepare_inputs_for_generation
         self.can_generate = lambda: True
         hidden_size = model.config.hidden_size
+
+        # Force use_constraint to False to ensure consistent behavior between T5 and VideoRQVAE
+        self.use_constraint, self.sk_epsilon, self.sk_iters = False, sk_epsilon, sk_iters
 
         self.video_rqvae = videorqvae
 
@@ -107,20 +114,51 @@ class GRDR(nn.Module, GenerationMixin, ABC):
         return {"decoder_input_ids": input_ids, "encoder_outputs": encoder_outputs, "attention_mask": attention_mask}
 
     @torch.no_grad()
-    def quantize(self, probability):
-        return torch.argmax(probability, dim=-1)
+    def quantize(self, probability, use_constraint=None):
+        distances = -probability
+        use_constraint = self.use_constraint if use_constraint is None else use_constraint
+        if not use_constraint:
+            codes = torch.argmin(distances, dim=-1)
+        else:
+            distances = self.center_distance_for_constraint(distances)
+            distances = distances.double()
+            Q = sinkhorn_raw(
+                -distances,
+                self.sk_epsilon,
+                self.sk_iters,
+                use_distrib_train=dist.is_initialized()
+            )
+            codes = torch.argmax(Q, dim=-1)
+            if torch.isnan(Q).any() or torch.isinf(Q).any():
+                print(f"Sinkhorn Algorithm returns nan/inf values.")
+        return codes
+
+    @staticmethod
+    def center_distance_for_constraint(distances):
+        max_distance = distances.max()
+        min_distance = distances.min()
+        if dist.is_initialized():
+            dist.all_reduce(max_distance, torch.distributed.ReduceOp.MAX)
+            dist.all_reduce(min_distance, torch.distributed.ReduceOp.MIN)
+        middle = (max_distance + min_distance) / 2
+        amplitude = max_distance - middle + 1e-5
+        assert torch.all(amplitude > 0)
+        centered_distances = (distances - middle) / amplitude
+        return centered_distances
 
     def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None, aux_ids=None,
                 video_features=None, token_idx=None, return_code=False, return_quantized_embedding=False,
-                encoder_outputs=None, return_residual_layer=None, return_all=False, **kwargs):
+                use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False, **kwargs):
         """
         Dual-path forward:
         - Query path (input_ids provided): Use T5 encoder -> project to code space
         - Video path (video_features provided): Use VideoRQVAE encoder-quantizer
         """
+        use_constraint = use_constraint if use_constraint is not None else self.use_constraint
+
         # Video path: video features -> VideoRQVAE
         if video_features is not None:
-            return self._forward_video(video_features, token_idx, return_quantized_embedding, return_residual_layer, return_all)
+            return self._forward_video(video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer, return_all)
 
         # Query path: text tokens -> T5 encoder -> code projection
         # Also handles encoder_outputs (from beam search subsequent steps)
@@ -128,6 +166,7 @@ class GRDR(nn.Module, GenerationMixin, ABC):
             return self._forward_text(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                use_constraint=use_constraint,
                 decoder_input_ids=decoder_input_ids,
                 aux_ids=aux_ids,
                 return_code=return_code,
@@ -137,13 +176,13 @@ class GRDR(nn.Module, GenerationMixin, ABC):
 
         raise ValueError("Either input_ids or video_features must be provided")
 
-    def _forward_video(self, video_features, token_idx, return_quantized_embedding, return_residual_layer=None, return_all=False):
+    def _forward_video(self, video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer=None, return_all=False):
         # Encode video features into latent tokens
         video_encoded_features = self.video_rqvae.encoder(video_features)
 
         # Quantize ALL latent tokens and get raw distances
         video_quantized_features, rq_loss, indices, distances, residuals = self.video_rqvae.rq(
-            video_encoded_features, use_sk=False, return_probs=True
+            video_encoded_features, use_sk=use_constraint, return_probs=True
         )
 
         # If return_all, skip token selection and return all latent tokens
@@ -206,7 +245,7 @@ class GRDR(nn.Module, GenerationMixin, ABC):
         )
 
     def _forward_text(self, input_ids=None, attention_mask=None, decoder_input_ids=None, aux_ids=None, return_code=False,
-                return_quantized_embedding=False, encoder_outputs=None, **kwargs):
+                return_quantized_embedding=False, use_constraint=None, encoder_outputs=None, **kwargs):
         # Get batch size and device from available tensors
         if input_ids is not None:
             batch_size, device = input_ids.size(0), input_ids.device
@@ -249,7 +288,7 @@ class GRDR(nn.Module, GenerationMixin, ABC):
         code_logits = torch.stack(code_logits, dim=1)
 
         probability = code_logits[:, -1].contiguous()
-        discrete_codes = self.quantize(probability)
+        discrete_codes = self.quantize(probability, use_constraint=use_constraint)
 
         if aux_ids is None:
             aux_ids = discrete_codes
