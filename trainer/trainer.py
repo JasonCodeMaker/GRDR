@@ -1,5 +1,6 @@
 import json
 import os
+from collections import Counter
 
 import numpy as np
 import torch
@@ -182,11 +183,58 @@ class OurTrainer:
         # Route agreement loss: align query/video code distributions as an
         # in-batch retrieval objective over the shared semantic-ID codebooks.
         route_agree_loss = 0
+        bucket_route_loss = 0
+        video_rank_loss = 0
+        expanded_size_loss = 0
+        if loss_weights is not None:
+            detach_video_route = bool(loss_weights.get('route_agree_stopgrad_video', False))
+            bucket_sizes = None
+            if (
+                loss_weights.get('bucket_route_loss', 0) != 0 or
+                loss_weights.get('video_rank_loss', 0) != 0 or
+                loss_weights.get('expanded_size_loss', 0) != 0
+            ):
+                bucket_sizes = OurTrainer._bucket_sizes_for_batch(
+                    batch.get('video_ids'),
+                    loss_weights.get('route_bucket_size_by_video_id'),
+                    query_outputs.logits.device,
+                    default_size=loss_weights.get('route_bucket_default_size', 1.0)
+                )
+
         if loss_weights is not None and loss_weights.get('route_agree_loss', 0) != 0:
             route_agree_loss = OurTrainer.compute_route_agreement_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
-                video_ids=batch.get('video_ids')
+                video_ids=batch.get('video_ids'),
+                detach_video=detach_video_route
+            )
+
+        if loss_weights is not None and loss_weights.get('bucket_route_loss', 0) != 0:
+            bucket_route_loss = OurTrainer.compute_bucket_route_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids'),
+                bucket_sizes=bucket_sizes,
+                gamma=loss_weights.get('route_bucket_gamma', 1.0),
+                detach_video=detach_video_route
+            )
+
+        if loss_weights is not None and loss_weights.get('video_rank_loss', 0) != 0:
+            video_rank_loss = OurTrainer.compute_video_rank_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids'),
+                bucket_sizes=bucket_sizes,
+                beta=loss_weights.get('video_rank_beta', 0.5),
+                detach_video=detach_video_route
+            )
+
+        if loss_weights is not None and loss_weights.get('expanded_size_loss', 0) != 0:
+            expanded_size_loss = OurTrainer.compute_expanded_size_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                bucket_sizes=bucket_sizes,
+                detach_video=detach_video_route
             )
 
         return dict(
@@ -195,7 +243,10 @@ class OurTrainer:
             code_loss=code_loss,
             cl_dd_loss=cl_dd_loss,
             rq_loss=rq_loss,
-            route_agree_loss=route_agree_loss
+            route_agree_loss=route_agree_loss,
+            bucket_route_loss=bucket_route_loss,
+            video_rank_loss=video_rank_loss,
+            expanded_size_loss=expanded_size_loss,
         )
 
     @staticmethod
@@ -239,32 +290,22 @@ class OurTrainer:
         )
 
     @staticmethod
-    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, eps=1e-8):
-        """
-        Multi-positive in-batch retrieval loss in semantic-ID distribution space.
-
-        Args:
-            query_logits: [B, L, C] query decoder logits over shared codebooks.
-            video_logits: [B, L, C] video tokenizer logits over the same codebooks.
-            video_ids: optional list of sample ids; rows with the same base video id
-                are treated as positives to avoid false negatives from duplicate captions.
-
-        Returns:
-            Scalar NLL where each query retrieves matching video rows by summing
-            log per-level code-distribution agreement.
-        """
+    def _route_pair_scores(query_logits, video_logits, detach_video=False, eps=1e-8):
         if query_logits is None or video_logits is None:
-            raise ValueError("Route agreement loss requires query and video logits")
+            raise ValueError("Route scoring requires query and video logits")
         if query_logits.dim() != 3 or video_logits.dim() != 3:
             raise ValueError(
-                "Route agreement logits must be [batch, code_length, code_number], "
+                "Route scoring logits must be [batch, code_length, code_number], "
                 f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
             )
         if query_logits.shape != video_logits.shape:
             raise ValueError(
-                "Route agreement query/video logits must have identical shapes, "
+                "Route scoring query/video logits must have identical shapes, "
                 f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
             )
+
+        if detach_video:
+            video_logits = video_logits.detach()
 
         batch_size, code_length, _ = query_logits.shape
         scores = query_logits.new_zeros(batch_size, batch_size)
@@ -273,12 +314,123 @@ class OurTrainer:
             video_probs = F.softmax(video_logits[:, layer_idx], dim=-1)
             agreement = torch.matmul(query_probs, video_probs.transpose(0, 1))
             scores = scores + torch.log(agreement.clamp_min(eps))
+        return scores
 
+    @staticmethod
+    def _bucket_sizes_for_batch(video_ids, bucket_lookup, device, default_size=1.0):
+        if not video_ids or not bucket_lookup:
+            return None
+
+        sizes = []
+        for video_id in video_ids:
+            exact_key = str(video_id)
+            base_key = OurTrainer._base_video_id(video_id)
+            size = bucket_lookup.get(exact_key, bucket_lookup.get(base_key, default_size))
+            sizes.append(float(size))
+        return torch.tensor(sizes, dtype=torch.float32, device=device).clamp_min(1.0)
+
+    @staticmethod
+    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, detach_video=False, eps=1e-8):
+        """
+        Multi-positive in-batch retrieval loss in semantic-ID distribution space.
+
+        Args:
+            query_logits: [B, L, C] query decoder logits over shared codebooks.
+            video_logits: [B, L, C] video tokenizer logits over the same codebooks.
+            video_ids: optional list of sample ids; rows with the same base video id
+                are treated as positives to avoid false negatives from duplicate captions.
+            detach_video: if true, route-agreement gradients stop at video logits.
+
+        Returns:
+            Scalar NLL where each query retrieves matching video rows by summing
+            log per-level code-distribution agreement.
+        """
+        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
         positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
         positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
         log_pos = torch.logsumexp(positive_scores, dim=1)
         log_all = torch.logsumexp(scores, dim=1)
         return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_bucket_route_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
+                                  gamma=1.0, detach_video=False, eps=1e-8):
+        """
+        Multi-positive route loss that prefers compact positive semantic-ID buckets.
+
+        bucket_sizes: optional [B] tensor aligned with video rows. A larger bucket
+            receives a smaller positive weight proportional to (size + 1)^-gamma.
+        """
+        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+
+        if bucket_sizes is None:
+            bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
+        else:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+
+        inverse_bucket = (bucket_sizes + 1.0).pow(-float(gamma))
+        positive_weights = positive_mask.to(scores.dtype) * inverse_bucket.unsqueeze(0)
+        positive_weights = positive_weights / positive_weights.sum(dim=1, keepdim=True).clamp_min(eps)
+
+        weighted_positive_scores = scores + torch.log(positive_weights.clamp_min(eps))
+        weighted_positive_scores = weighted_positive_scores.masked_fill(
+            ~positive_mask,
+            torch.finfo(scores.dtype).min
+        )
+        log_pos = torch.logsumexp(weighted_positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_video_rank_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
+                                beta=0.5, detach_video=False, eps=1e-8):
+        """
+        In-batch video-route ranking loss with a bucket-size expansion penalty.
+        """
+        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+
+        if bucket_sizes is not None:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+            scores = scores - float(beta) * torch.log1p(bucket_sizes).unsqueeze(0)
+
+        positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
+        log_pos = torch.logsumexp(positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_expanded_size_loss(query_logits, video_logits, bucket_sizes=None, detach_video=False, eps=1e-8):
+        """
+        Expected log bucket size under the query-to-video-route distribution.
+        """
+        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        if bucket_sizes is None:
+            bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
+        else:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+
+        route_probs = F.softmax(scores, dim=1)
+        size_cost = torch.log1p(bucket_sizes).unsqueeze(0)
+        return (route_probs * size_cost).sum(dim=1).mean()
+
+
+def build_route_bucket_size_by_video_id(code_path):
+    """Build sample-id -> full-route bucket-size lookup from a saved .code JSON."""
+    if not code_path or not os.path.exists(code_path):
+        return {}
+    with open(code_path) as handle:
+        code_by_video = json.load(handle)
+    route_counts = Counter(tuple(code) for code in code_by_video.values())
+    return {
+        str(video_id): int(route_counts[tuple(code)])
+        for video_id, code in code_by_video.items()
+    }
 
 
 def build_loss_weights(config, phase):
@@ -299,7 +451,14 @@ def build_loss_weights(config, phase):
         'code_loss': config.get(f'{prefix}code_loss', 0),
         'cl_dd_loss': config.get(f'{prefix}cl_dd_loss', 0),
         'rq_loss': config.get(f'{prefix}rq_loss', 0),
-        'route_agree_loss': config.get(f'{prefix}route_agree_loss', 0)
+        'route_agree_loss': config.get(f'{prefix}route_agree_loss', 0),
+        'bucket_route_loss': config.get(f'{prefix}bucket_route_loss', 0),
+        'video_rank_loss': config.get(f'{prefix}video_rank_loss', 0),
+        'expanded_size_loss': config.get(f'{prefix}expanded_size_loss', 0),
+        'route_agree_stopgrad_video': config.get('route_agree_stopgrad_video', False),
+        'route_bucket_gamma': config.get('route_bucket_gamma', 1.0),
+        'video_rank_beta': config.get('video_rank_beta', 0.5),
+        'route_bucket_default_size': config.get('route_bucket_default_size', 1.0),
     }
 
 
@@ -487,6 +646,16 @@ def train(config, global_step=0):
 
     # Build loss weights from config based on training phase
     loss_w = build_loss_weights(config, config['loss_w'])
+    if (
+        loss_w.get('bucket_route_loss', 0) != 0 or
+        loss_w.get('video_rank_loss', 0) != 0 or
+        loss_w.get('expanded_size_loss', 0) != 0
+    ):
+        bucket_lookup = build_route_bucket_size_by_video_id(config.get('prev_id'))
+        loss_w['route_bucket_size_by_video_id'] = bucket_lookup
+        accelerator.print(
+            f'Route bucket stats: {len(bucket_lookup)} sample routes from {config.get("prev_id")}'
+        )
 
     step, epoch = 0, 0
     epoch_step = len(data_loader)
