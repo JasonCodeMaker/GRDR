@@ -15,6 +15,13 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 - GRDR’s goal is to serve as a scalable stage-1 semantic-ID index: assign multiple short IDs per video, learn them jointly with the query decoder under shared retrieval-aware supervision, and hand a compact high-recall candidate pool to a strong dense reranker.
 - Preserve the recall-rerank split in future work: stage 1 optimizes storage, latency, and candidate coverage; stage 2 optimizes fine-grained ranking on the bounded pool.
 
+## Global Optimization Objective
+
+- Primary objective for future GRDR experiments: improve Stage-1 `CanHit@100`, defined as video-level GT-in-candidates after semantic-ID expansion and deduplication.
+- Training evaluation and candidate export should report `CanHit@20/50/100`; save-best uses `CanHit@100`.
+- Do not treat candidate JSON `Recall@K` as GT-in-candidates. If sID recall is logged, label it explicitly as a semantic-ID diagnostic.
+- X-Pool remains the downstream final-rank evaluator; optimize Stage 1 to raise `CanHit@100` while keeping candidate pools compact enough for X-Pool.
+
 ## Research Workflow
 
 Before proposing or extending any new research idea, run a self-review first.
@@ -59,10 +66,17 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 
 ## Current Best
 
-Last updated: 2026-04-28
+Version: `Version1.0`
+
+Last updated: 2026-04-29
 
 - Variant: `fit_bucket_l010_g10_k20_s42`
 - Seed: `42`
+- Default training config:
+  - `model_name=t5-small`, `dataset=msrvtt`, `code_num=128`, `max_length=3`, `num_latent_tokens=4`
+  - `batch_size=512`, `eval_batch_size=32`, `num_candidates=20`
+  - `w2_route_agree_loss=0`, `w3_bucket_route_loss=0.10`, `route_agree_stopgrad_video=True`
+  - `save_path=output/GRDR/bucket_candidate_k20`
 - Checkpoint:
   `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
 - Resolved checkpoint path:
@@ -71,12 +85,12 @@ Last updated: 2026-04-28
 Current best Stage 1 candidates:
 - Setting 1 selected beam: `100`
   - avg_candidates_per_query: `130.73`
-  - candidate Recall@10: `0.627`
+  - CanHit@20/50/100/all: `52.8 / 74.5 / 86.5 / 91.0`
   - candidate file:
     `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t1_beam100.json`
 - Setting 2 selected beam: `15`
   - avg_candidates_per_query: `300.41`
-  - candidate Recall@10: `0.568`
+  - CanHit@20/50/100/all: `4.6 / 15.0 / 32.0 / 64.3`
   - candidate file:
     `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t2_beam15.json`
 

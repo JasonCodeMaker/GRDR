@@ -263,7 +263,7 @@ def expand_sid_predictions_to_videos(generated_sids, sid_to_videos):
     return ranked_videos
 
 
-def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_videos, ks=(10, 20, 50)):
+def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_videos, ks=(20, 50, 100)):
     """Compute candidate-expanded GT hit percentages at fixed video ranks."""
     if len(predictions) != len(ground_truth_video_ids):
         raise ValueError(
@@ -454,10 +454,10 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
             predictions.append(sid_list)
 
         gt_video_ids = [sample['video_id'] for sample in test_dataset.samples]
-        canhit_results = compute_candidate_hit_metrics(predictions, gt_video_ids, sid_to_videos, ks=(10, 20, 50))
-        selection_metric = canhit_results["CanHit@50"]
+        canhit_results = compute_candidate_hit_metrics(predictions, gt_video_ids, sid_to_videos, ks=(20, 50, 100))
+        selection_metric = canhit_results["CanHit@100"]
         accelerator.print('Candidate-expanded retrieval:', canhit_results)
-        accelerator.print(f'Selection metric CanHit@50: {selection_metric:.4f}')
+        accelerator.print(f'Selection metric CanHit@100: {selection_metric:.4f}')
 
         if accelerator.is_main_process:
             wandb.log({f"eval/{k}": v for k, v in canhit_results.items()}, step=global_step)
@@ -472,25 +472,18 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
     return results, overall_metric
 
 
-def compute_detailed_metrics(results, predictions, labels, total_time, num_queries, num_candidates):
+def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_to_videos, total_time, num_queries, num_candidates):
     """Compute detailed evaluation metrics."""
-    metrics = {}
-    for k in [1, 5, 10, num_candidates]:
-        recall_result = eval_recall(predictions, labels, at=k)
-        metrics[f'Recall@{k}'] = recall_result[f'R@{k}']
+    metrics = compute_candidate_hit_metrics(
+        predictions,
+        ground_truth_video_ids,
+        sid_to_videos,
+        ks=(20, 50, 100),
+    )
 
     metrics['seconds_per_query'] = total_time / num_queries if num_queries > 0 else 0
     metrics['total_queries'] = num_queries
     metrics['batch_size'] = 1
-
-    for k in [1, 5, 10, num_candidates]:
-        correct_count = 0
-        for pred, lbs in zip(predictions, labels):
-            if any(lb in pred[:k] for lb in lbs):
-                correct_count += 1
-        metrics[f'correct_retrievals_at_{k}'] = correct_count
-
-    metrics['correct_retrievals'] = metrics.get(f'correct_retrievals_at_{num_candidates}', 0)
 
     avg_candidates = sum(r['num_candidates'] for r in results) / len(results) if results else 0
     metrics['avg_candidates_per_query'] = round(avg_candidates, 2)
@@ -849,10 +842,19 @@ def test(config):
         predictions.append(sid_list)
 
     eval_results = eval_all(predictions, query_labels)
-    print('Test', eval_results)
+    print('sID diagnostic (not candidate hit)', eval_results)
 
     num_queries = len(dataset.samples)
-    metrics = compute_detailed_metrics(results, predictions, query_labels, total_time, num_queries, num_candidates)
+    gt_video_ids = [sample['video_id'] for sample in dataset.samples]
+    metrics = compute_detailed_metrics(
+        results,
+        predictions,
+        gt_video_ids,
+        sid_to_videos,
+        total_time,
+        num_queries,
+        num_candidates,
+    )
 
     timestamp = time.strftime('%m%d%H%M')
     candidates_dir = "candidates"
