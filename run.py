@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument('--w2_code_loss', type=float, default=0.8, help='Phase 2 code prediction loss weight')
     parser.add_argument('--w2_cl_dd_loss', type=float, default=0.1, help='Phase 2 video reconstruction loss weight')
     parser.add_argument('--w2_rq_loss', type=float, default=0.3, help='Phase 2 RQ quantization loss weight')
-    parser.add_argument('--w2_route_agree_loss', type=float, default=0.05,
+    parser.add_argument('--w2_route_agree_loss', type=float, default=0,
                         help='Phase 2 semantic-ID route agreement loss weight')
     parser.add_argument('--w2_bucket_route_loss', type=float, default=0,
                         help='Phase 2 bucket-aware semantic-ID route loss weight')
@@ -74,14 +74,14 @@ def parse_args():
     parser.add_argument('--w3_rq_loss', type=float, default=0, help='Phase fit RQ quantization loss weight')
     parser.add_argument('--w3_route_agree_loss', type=float, default=0,
                         help='Phase fit semantic-ID route agreement loss weight')
-    parser.add_argument('--w3_bucket_route_loss', type=float, default=0,
+    parser.add_argument('--w3_bucket_route_loss', type=float, default=0.10,
                         help='Phase fit bucket-aware semantic-ID route loss weight')
     parser.add_argument('--w3_video_rank_loss', type=float, default=0,
                         help='Phase fit bucket-penalized video-route ranking loss weight')
     parser.add_argument('--w3_expanded_size_loss', type=float, default=0,
                         help='Phase fit expected expanded bucket-size regularization weight')
     parser.add_argument('--route_agree_stopgrad_video', action=argparse.BooleanOptionalAction,
-                        default=False,
+                        default=True,
                         help='Detach video-side logits for route-aware losses')
     parser.add_argument('--route_bucket_gamma', type=float, default=1.0,
                         help='Inverse-bucket weighting exponent for bucket-aware route loss')
@@ -105,19 +105,19 @@ def parse_args():
     # Evaluation arguments
     parser.add_argument('--eval', action='store_true', default=False, help='Evaluate the model')
     parser.add_argument('--eval_checkpoint', type=str,
-                        default="output/GRDR/msrvtt/current_best/model-3-fit/best_model.pt",
+                        default="output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt",
                         help='Checkpoint path for evaluation')
-    parser.add_argument('--num_candidates', type=int, default=50,
+    parser.add_argument('--num_candidates', type=int, default=20,
                        help='Number of top candidates to retrieve per query for JSON export')
-    parser.add_argument('--eval_batch_size', type=int, default=None,
+    parser.add_argument('--eval_batch_size', type=int, default=32,
                        help='Batch size for retrieval evaluation; defaults to training batch size')
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                        help='Setting: 1=test only pool, 2=train+test combined pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
 
-    parser.add_argument('--save_path', type=str, default='output/GRDR')
-    parser.add_argument('--exp_name', type=str, default='debug', help='Experiment name for wandb and save path')
+    parser.add_argument('--save_path', type=str, default='output/GRDR/bucket_candidate_k20')
+    parser.add_argument('--exp_name', type=str, default='fit_bucket_l010_g10_k20_s42', help='Experiment name for wandb and save path')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--device', type=int, default=0, choices=[0, 1],
                        help='GPU device ID to use for training (0 or 1)')
