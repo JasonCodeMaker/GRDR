@@ -308,7 +308,8 @@ class PerQueryEvaluator:
     def evaluate_query(
         self,
         query_text: str,
-        video_id_gt: Optional[str] = None
+        video_id_gt: Optional[str] = None,
+        candidate_query_idx: Optional[int] = None
     ) -> Dict:
         """
         Evaluate a single text query against all videos.
@@ -319,6 +320,8 @@ class PerQueryEvaluator:
         Args:
             query_text: Text query string
             video_id_gt: Ground truth video ID (optional, for rank computation)
+            candidate_query_idx: Candidate-file row to use in candidate mode.
+                This avoids duplicate-query-text collisions in diagnostics.
 
         Returns:
             Dictionary containing:
@@ -375,7 +378,9 @@ class PerQueryEvaluator:
         # If candidates mode: use per-query candidates, else use all videos
         if self.use_candidates:
             # Look up candidate pool for this query
-            if query_text in self.query_text_to_idx:
+            if candidate_query_idx is not None and candidate_query_idx in self.query_candidates_map:
+                search_pool = self.query_candidates_map[candidate_query_idx]
+            elif query_text in self.query_text_to_idx:
                 candidate_query_idx = self.query_text_to_idx[query_text]
                 search_pool = self.query_candidates_map[candidate_query_idx]
             else:
@@ -507,10 +512,12 @@ class PerQueryEvaluator:
 
         return {
             'query_idx': query_idx,
+            'candidate_query_idx': candidate_query_idx,
             'query_text': query_text,
             'video_id_gt': video_id_gt,
             'similarities': similarity_dict,
             'ranked_videos': ranked_videos,
+            'candidate_count': len(search_pool),
             'rank': rank,
             'timing': timing
         }

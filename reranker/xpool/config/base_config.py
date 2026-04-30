@@ -51,6 +51,8 @@ class Config(ABC):
         self.result_file = args.result_file
         self.candidate_file = args.candidate_file
         self.rerank_mode = args.rerank_mode
+        self.index_safe_candidate_mask = args.index_safe_candidate_mask
+        self.save_per_query_ranks = args.save_per_query_ranks
         self.expanded_pool = args.expanded_pool
         self.use_cached_video_features = args.use_cached_video_features
         self.video_cache_dir = args.video_cache_dir

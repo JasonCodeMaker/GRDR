@@ -13,6 +13,8 @@ research/*
 research/active/*
 !research/active/2026-04-15-msrvtt-tokenizer-health/
 !research/active/2026-04-15-msrvtt-tokenizer-health/**
+!research/active/2026-04-29-msrvtt-s2-hparam-tree/
+!research/active/2026-04-29-msrvtt-s2-hparam-tree/**
 var/   
 /index/
 output

@@ -14,13 +14,25 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 - Prior generative retrieval is efficient but weak on two fronts that matter for stage 1: access-path coverage and query-to-key reachability.
 - GRDR’s goal is to serve as a scalable stage-1 semantic-ID index: assign multiple short IDs per video, learn them jointly with the query decoder under shared retrieval-aware supervision, and hand a compact high-recall candidate pool to a strong dense reranker.
 - Preserve the recall-rerank split in future work: stage 1 optimizes storage, latency, and candidate coverage; stage 2 optimizes fine-grained ranking on the bounded pool.
+- Recent MSR-VTT Setting 2 diagnostics showed that final X-Pool can improve simply from a wider candidate handoff. Treat those gains as candidate-budget effects unless compact Stage-1 reachability improves under the same measured budget.
+- The current refinement target is access-path reachability under a fixed compact budget: reduce route misses and late overflows so the GT video enters the early deduplicated candidate set, not merely anywhere in a larger full candidate file.
 
 ## Global Optimization Objective
 
-- Primary objective for future GRDR experiments: improve Stage-1 `CanHit@100`, defined as video-level GT-in-candidates after semantic-ID expansion and deduplication.
-- Training evaluation and candidate export should report `CanHit@20/50/100`; save-best uses `CanHit@100`.
+- Primary objective for future GRDR experiments: improve compact Stage-1 reachability under a matched measured candidate budget.
+- `CanHit@100` / `CompactHit@100` means the GT video appears in the first 100 deduplicated expanded videos after semantic-ID expansion.
+- `FullSetHit@All` means the GT video appears anywhere in the full candidate file passed to X-Pool; `route_miss = 1 - FullSetHit@All`.
+- Do not equate route miss with `CanHit@100`. A run can reduce route miss while still failing compact Stage 1 if the GT appears only after rank 100.
+- Training evaluation and candidate export should report `CanHit@20/50/100`, `FullSetHit@All`, `OverflowHit`, GT expanded-rank buckets, candidate-count stats, and a discounted rank metric such as `MeanLogDiscount`. Save-best can still use `CanHit@100`, but method selection must check the full compact-budget scorecard.
 - Do not treat candidate JSON `Recall@K` as GT-in-candidates. If sID recall is logged, label it explicitly as a semantic-ID diagnostic.
-- X-Pool remains the downstream final-rank evaluator; optimize Stage 1 to raise `CanHit@100` while keeping candidate pools compact enough for X-Pool.
+- X-Pool remains the downstream final-rank evaluator; optimize Stage 1 to raise compact reachability while keeping candidate pools bounded. X-Pool gains driven by larger average candidate count or `OverflowHit` are diagnostic only, not compact Stage-1 improvements.
+
+## MSR-VTT Setting 2 Rules
+
+- Current compact budget gate: `avg_candidates_per_query <= 310`. Any Setting 2 row above this gate is excluded from compact-champion selection unless the user explicitly labels it as a diagnostic or large-pool ablation.
+- The primary failure bucket to attack is route/access-path miss, but only under the compact budget gate. The desired movement is from absent or late GT to early top-100 GT, not from absent to late full-pool rescue.
+- A valid Setting 2 champion must beat the current compact reference under the same budget gate and pass multi-seed validation. Do not promote a single-seed tie or a `+0.1` `CanHit@100` change.
+- Required Setting 2 readout: `avg/p95/max candidates`, `CanHit@20/50/100`, `FullSetHit@All`, `OverflowHit`, `route_miss`, `MeanLogDiscount`, top-100-truncated X-Pool, full-candidate X-Pool, and whether any X-Pool gain is caused by larger pool size.
 
 ## Research Workflow
 
@@ -68,7 +80,7 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 
 Version: `Version1.0`
 
-Last updated: 2026-04-29
+Last updated: 2026-04-30
 
 - Variant: `fit_bucket_l010_g10_k20_s42`
 - Seed: `42`
@@ -111,7 +123,7 @@ README MSR-VTT comparison:
 - Setting 1 improves R@10 over README (`78.9` vs `78.0`) but is lower on R@1/R@5.
 - Setting 2 matches README R@1/R@5 and improves R@10 (`40.6` vs `39.7`).
 
-Treat this as the current best until a new run improves the matched setting and evaluation budget.
+Treat this as the current best until a new run improves the matched setting under the strict compact budget gate. For MSR-VTT Setting 2, rows above `avg_candidates_per_query=310` are not comparable compact champions even if full-candidate X-Pool improves.
 
 ## graphify
 

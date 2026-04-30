@@ -56,6 +56,10 @@ class AllConfig(Config):
         parser.add_argument('--eval_checkpoint', type=str, default='reranker/xpool/ckpt/msrvtt9k_model_best.pth', help='Checkpoint path for evaluation')
         parser.add_argument('--candidate_file', type=str, default=None, help='Path to candidate JSON file for reranking mode')
         parser.add_argument('--rerank_mode', action='store_true', default=False, help='Enable candidate-based evaluation')
+        parser.add_argument('--index_safe_candidate_mask', action='store_true', default=False,
+                            help='Build candidate masks from candidate JSON row order instead of query text')
+        parser.add_argument('--save_per_query_ranks', type=str, default=None,
+                            help='Optional JSON path for per-query ranks from batch evaluation')
 
         # expanded pool evaluation parameters
         parser.add_argument('--expanded_pool', action='store_true',

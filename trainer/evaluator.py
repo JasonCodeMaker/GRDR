@@ -344,6 +344,8 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
     results = summarize_recall(rank, ks=(1, 5, 10))
 
     unwrap_model = accelerator.unwrap_model(model)
+    if hasattr(unwrap_model, "device"):
+        unwrap_model.device = accelerator.device
 
     train_sample_codes_dict = unwrap_model.gen_sid(train_data_loader)
 
@@ -417,7 +419,11 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
         tk0 = tqdm(test_data_loader, total=len(test_data_loader), desc='CanHit Retrieval')
         output_all = []
-        test_top_k = max(50, selection_num_candidates)
+        # Keep checkpoint selection aligned with export beam. In Setting 2,
+        # train-test sID collisions can expand a small beam into a large video
+        # candidate pool, so forcing at least 50 generated sIDs changes the
+        # operating point being optimized.
+        test_top_k = selection_num_candidates
         with torch.no_grad():
             for batch in tk0:
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()
@@ -637,6 +643,8 @@ def test(config):
         print(f"Train dataset: {len(train_dataset)} samples")
 
     model = model.cuda()
+    if hasattr(model, "device"):
+        model.device = next(model.parameters()).device
     model.eval()
 
     best_model_path = config.get('eval_checkpoint', None)
@@ -813,22 +821,29 @@ def test(config):
 
             if code_str in sid_to_videos:
                 for video_id in sid_to_videos[code_str]:
-                    if video_id not in seen_videos:
-                        seen_videos.add(video_id)
-                        ranked_videos.append(video_id)
-                        ranked_videos_with_sid.append([code_str, video_id])
+                    base_video_id = strip_video_suffix(str(video_id))
+                    if base_video_id not in seen_videos:
+                        seen_videos.add(base_video_id)
+                        ranked_videos.append(base_video_id)
+                        ranked_videos_with_sid.append([code_str, base_video_id])
                         ranked_scores.append(score)
 
         cleaned_gt_video_id = strip_video_suffix(gt_video_id)
         cleaned_ranked_videos = ranked_videos
 
         result = {
+            "query_idx": idx,
             "query_text": query_text,
             "ground_truth_video_id": cleaned_gt_video_id,
         }
 
         if detailed_generation:
             result["ground_truth_sID"] = query_labels[idx]
+            result["generated_sids"] = sid_list
+            result["generated_sid_bucket_sizes"] = {
+                sid: len(sid_to_videos.get(sid, []))
+                for sid in sid_list
+            }
 
         if detailed_generation:
             result["candidates"] = ranked_videos_with_sid
@@ -1094,6 +1109,8 @@ def test_dr(config, checkpoint):
                  code_number=code_num, videorqvae=videorqvae)
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     model = model.cuda()
+    if hasattr(model, "device"):
+        model.device = next(model.parameters()).device
     model.eval()
 
     use_pseudo_queries = config.get('use_pseudo_queries', False)

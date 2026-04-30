@@ -6,21 +6,15 @@
     "index_type": "videorqvae",
     "code_book_size": 128,
     "code_book_num": 4,
-    "timestamp": "04282133"
+    "timestamp": "04292152"
   },
   "metrics": {
-    "Recall@1": 0.215,
-    "Recall@5": 0.455,
-    "Recall@10": 0.568,
-    "Recall@15": 0.643,
-    "seconds_per_query": 0.01666931700706482,
+    "CanHit@20": 4.6,
+    "CanHit@50": 15.0,
+    "CanHit@100": 32.0,
+    "seconds_per_query": 0.016117268562316895,
     "total_queries": 1000,
     "batch_size": 1,
-    "correct_retrievals_at_1": 215,
-    "correct_retrievals_at_5": 455,
-    "correct_retrievals_at_10": 568,
-    "correct_retrievals_at_15": 643,
-    "correct_retrievals": 643,
     "avg_candidates_per_query": 300.41
   },
   "results": [

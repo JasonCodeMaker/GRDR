@@ -189,8 +189,12 @@ def main():
                         help='Optional path for structured summary CSV')
     custom_parser.add_argument('--summary_json', type=str, default=None,
                         help='Optional path for structured summary JSON')
+    custom_parser.add_argument('--index_safe_candidates', action='store_true',
+                        help='Use candidate file row index instead of query text when selecting per-query candidates')
 
     custom_args, _ = custom_parser.parse_known_args()
+    if custom_args.cache_dir in ("", "none", "None", "null", "NULL"):
+        custom_args.cache_dir = None
 
     # Get candidates_file from AllConfig (uses --candidate_file argument)
     # candidates_file = "candidates/msrvtt_videorqvae__c128l3_100_candidates.json"
@@ -302,17 +306,25 @@ def main():
 
     per_query_results = []
 
-    for query_text, video_id_gt in tqdm(queries, desc="Processing queries"):
+    for candidate_query_idx, (query_text, video_id_gt) in enumerate(tqdm(queries, desc="Processing queries")):
         # Evaluate single query
-        result = evaluator.evaluate_query(query_text, video_id_gt)
+        result = evaluator.evaluate_query(
+            query_text,
+            video_id_gt,
+            candidate_query_idx=candidate_query_idx if (
+                custom_args.index_safe_candidates and candidates_file
+            ) else None,
+        )
 
         # Store detailed results
         per_query_results.append({
             'query_idx': result['query_idx'],
+            'candidate_query_idx': result.get('candidate_query_idx'),
             'query_text': result['query_text'],
             'video_id_gt': result['video_id_gt'],
             'rank': result['rank'],
             'top_5_videos': result['ranked_videos'][:5],
+            'candidate_count': result.get('candidate_count'),
             'timing': result['timing']
         })
 
@@ -393,6 +405,7 @@ def main():
                 'dataset': config.dataset_name,
                 'retrieval_mode': summary_row['retrieval_mode'],
                 'candidate_file': candidates_file,
+                'index_safe_candidates': custom_args.index_safe_candidates,
                 'num_frames': config.num_frames,
                 'cache_dir': custom_args.cache_dir,
                 'videos_dir': config.videos_dir,
@@ -440,6 +453,7 @@ def main():
                     'dataset': config.dataset_name,
                     'pooling_type': config.pooling_type,
                     'num_frames': config.num_frames,
+                    'index_safe_candidates': custom_args.index_safe_candidates,
                     'feature_mode': 'cached' if custom_args.cache_dir else 'on-the-fly'
                 }
             }, f, indent=2)

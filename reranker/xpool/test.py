@@ -57,8 +57,15 @@ def main():
     if hasattr(config, 'rerank_mode') and config.rerank_mode and config.candidate_file:
         print(f"Generating candidate mask from {config.candidate_file}")
         if hasattr(test_dataset, '_generate_candidate_mask'):
-            test_dataset.candidate_mask = test_dataset._generate_candidate_mask(
-                config.candidate_file, extra_vid_ids=extra_vid_ids)
+            try:
+                test_dataset.candidate_mask = test_dataset._generate_candidate_mask(
+                    config.candidate_file,
+                    extra_vid_ids=extra_vid_ids,
+                    index_safe=getattr(config, "index_safe_candidate_mask", False),
+                )
+            except TypeError:
+                test_dataset.candidate_mask = test_dataset._generate_candidate_mask(
+                    config.candidate_file, extra_vid_ids=extra_vid_ids)
             print(f"Generated candidate mask with shape: {test_dataset.candidate_mask.shape}")
         else:
             print(f"Warning: Dataset {type(test_dataset).__name__} does not support candidate mask generation")
@@ -121,4 +128,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

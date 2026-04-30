@@ -1,5 +1,6 @@
 from config.base_config import Config
 import os
+import json
 import numpy as np
 import torch
 from collections import defaultdict, deque
@@ -639,6 +640,42 @@ class Trainer(BaseTrainer):
             else:
                 # Original: ground truth for text_i is video_i (diagonal)
                 ranks = torch.diag(sims_sort_2).numpy()
+
+            per_query_path = getattr(self.config, "save_per_query_ranks", None)
+            if per_query_path:
+                per_query_results = []
+                candidate_counts = None
+                if candidate_mask is not None:
+                    candidate_counts = candidate_mask.sum(dim=1).cpu().numpy().tolist()
+                top_k = min(10, sims_sort.shape[1])
+                top_indices = sims_sort[:, :top_k].cpu().numpy()
+                for query_idx, rank in enumerate(ranks):
+                    gt_video_id = test_vid_ids[query_idx] if query_idx < len(test_vid_ids) else ""
+                    top_videos = []
+                    for vid_idx in top_indices[query_idx]:
+                        vid_id = all_vid_ids[int(vid_idx)]
+                        score = float(sims[query_idx, int(vid_idx)].item())
+                        if np.isfinite(score):
+                            top_videos.append([vid_id, score])
+                    per_query_results.append({
+                        "query_idx": query_idx,
+                        "candidate_query_idx": query_idx,
+                        "video_id_gt": gt_video_id,
+                        "rank": int(rank),
+                        "candidate_count": int(candidate_counts[query_idx]) if candidate_counts is not None else len(all_vid_ids),
+                        "top_videos": top_videos,
+                    })
+                os.makedirs(os.path.dirname(per_query_path), exist_ok=True)
+                with open(per_query_path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "per_query_results": per_query_results,
+                        "config": {
+                            "candidate_file": getattr(self.config, "candidate_file", None),
+                            "index_safe_candidate_mask": getattr(self.config, "index_safe_candidate_mask", False),
+                            "expanded_pool": getattr(self.config, "expanded_pool", False),
+                        },
+                    }, f, indent=2)
+                print(f"Saved per-query ranks to: {per_query_path}")
             
             # Compute metrics
             from modules.metrics import compute_metrics
