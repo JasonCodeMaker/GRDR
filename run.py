@@ -108,13 +108,23 @@ def parse_args():
                         default="output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt",
                         help='Checkpoint path for evaluation')
     parser.add_argument('--num_candidates', type=int, default=20,
-                       help='Number of top candidates to retrieve per query for JSON export')
+                       help='Number of constrained-generation beams/routes per query before sID expansion')
     parser.add_argument('--eval_batch_size', type=int, default=32,
                        help='Batch size for retrieval evaluation; defaults to training batch size')
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                        help='Setting: 1=test only pool, 2=train+test combined pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
+    parser.add_argument('--inference_reorder_by_access_score', action='store_true', default=False,
+                       help='Reorder expanded candidates using generated beam scores plus cached video access score')
+    parser.add_argument('--access_score_video_lambda', type=float, default=0.0,
+                       help='Video similarity weight for inference access-score reorder')
+    parser.add_argument('--access_score_bucket_gamma', type=float, default=0.0,
+                       help='Bucket-size penalty weight for inference access-score reorder')
+    parser.add_argument('--candidate_handoff_cap', type=int, default=0,
+                       help='If >0, cap the final candidate JSON to this many videos per query after optional access-score reorder')
+    parser.add_argument('--candidate_output_dir', type=str, default='candidates',
+                       help='Directory for exported candidate JSON')
 
     parser.add_argument('--save_path', type=str, default='output/GRDR/bucket_candidate_k20')
     parser.add_argument('--exp_name', type=str, default='fit_bucket_l010_g10_k20_s42', help='Experiment name for wandb and save path')

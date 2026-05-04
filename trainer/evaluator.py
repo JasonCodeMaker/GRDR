@@ -250,6 +250,92 @@ def strip_video_suffix(video_id):
     return video_id
 
 
+def build_video_embedding_lookup(video_keys, video_embeddings):
+    """Build base video id -> route-token embeddings."""
+    lookup = {}
+    for key, embedding in zip(video_keys, video_embeddings):
+        base_key = strip_video_suffix(str(key))
+        if base_key not in lookup:
+            lookup[base_key] = embedding
+    return lookup
+
+
+def _max_video_similarity(query_embedding, video_embedding):
+    if query_embedding is None or video_embedding is None:
+        return 0.0
+    query = np.asarray(query_embedding, dtype=np.float32)
+    video = np.asarray(video_embedding, dtype=np.float32)
+    if video.ndim == 1:
+        video = video.reshape(1, -1)
+    query = query / (np.linalg.norm(query) + 1e-8)
+    video = video / (np.linalg.norm(video, axis=1, keepdims=True) + 1e-8)
+    return float(np.max(video @ query))
+
+
+def rank_expanded_candidates(generated_codes, beam_scores, sid_to_videos, query_embedding=None,
+                             video_embedding_lookup=None, use_access_score=False,
+                             video_lambda=0.0, bucket_gamma=0.0):
+    """Expand generated routes to deduplicated videos, optionally access-score sorted."""
+    seen_sids = set()
+    sid_list = []
+    ranked_videos = []
+    ranked_videos_with_sid = []
+    ranked_scores = []
+    seen_videos = set()
+    candidate_scores = {}
+    candidate_entries = defaultdict(list)
+    candidate_first_idx = {}
+    candidate_counter = 0
+
+    for code, beam_score in zip(generated_codes, beam_scores):
+        code_str = str(code)
+        if code_str not in seen_sids:
+            seen_sids.add(code_str)
+            sid_list.append(code_str)
+
+        bucket_videos = sid_to_videos.get(code_str, [])
+        bucket_size = len(bucket_videos)
+        for video_id in bucket_videos:
+            base_video_id = strip_video_suffix(str(video_id))
+            if not use_access_score:
+                if base_video_id not in seen_videos:
+                    seen_videos.add(base_video_id)
+                    ranked_videos.append(base_video_id)
+                    ranked_videos_with_sid.append([code_str, base_video_id])
+                    ranked_scores.append(beam_score)
+                continue
+
+            if base_video_id not in candidate_first_idx:
+                candidate_first_idx[base_video_id] = candidate_counter
+                candidate_counter += 1
+            video_sim = _max_video_similarity(
+                query_embedding,
+                video_embedding_lookup.get(base_video_id) if video_embedding_lookup else None
+            )
+            access_score = (
+                float(beam_score)
+                + float(video_lambda) * video_sim
+                - float(bucket_gamma) * np.log1p(max(bucket_size, 1))
+            )
+            candidate_scores.setdefault(base_video_id, []).append(access_score)
+            candidate_entries[base_video_id].append((access_score, code_str, base_video_id))
+
+    if not use_access_score:
+        return sid_list, ranked_videos, ranked_videos_with_sid, ranked_scores
+
+    sorted_candidates = []
+    for video_id, scores in candidate_scores.items():
+        combined_score = float(np.logaddexp.reduce(np.asarray(scores, dtype=np.float64)))
+        best_entry = max(candidate_entries[video_id], key=lambda item: item[0])
+        sorted_candidates.append((combined_score, candidate_first_idx[video_id], best_entry))
+
+    sorted_candidates.sort(key=lambda item: (-item[0], item[1]))
+    ranked_videos = [entry[2] for _, _, entry in sorted_candidates]
+    ranked_videos_with_sid = [[entry[1], entry[2]] for _, _, entry in sorted_candidates]
+    ranked_scores = [score for score, _, _ in sorted_candidates]
+    return sid_list, ranked_videos, ranked_videos_with_sid, ranked_scores
+
+
 def expand_sid_predictions_to_videos(generated_sids, sid_to_videos):
     """Expand generated sIDs to first-seen deduplicated video IDs."""
     ranked_videos = []
@@ -279,6 +365,29 @@ def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_vi
             if gt_base_video_id in ranked_videos[:k]:
                 hits[k] += 1
 
+    return {
+        f"CanHit@{k}": (hits[k] / total * 100 if total else 0.0)
+        for k in ks
+    }
+
+
+def _result_candidate_video_ids(result):
+    candidates = result.get('candidates', [])
+    if candidates and isinstance(candidates[0], list):
+        return [strip_video_suffix(str(item[1])) for item in candidates]
+    return [strip_video_suffix(str(item)) for item in candidates]
+
+
+def compute_result_candidate_hit_metrics(results, ground_truth_video_ids, ks=(20, 50, 100)):
+    """Compute candidate hit from the final exported ranking."""
+    hits = {k: 0 for k in ks}
+    total = len(ground_truth_video_ids)
+    for result, gt_video_id in zip(results, ground_truth_video_ids):
+        ranked_videos = _result_candidate_video_ids(result)
+        gt_base_video_id = strip_video_suffix(str(gt_video_id))
+        for k in ks:
+            if gt_base_video_id in ranked_videos[:k]:
+                hits[k] += 1
     return {
         f"CanHit@{k}": (hits[k] / total * 100 if total else 0.0)
         for k in ks
@@ -478,14 +587,38 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
     return results, overall_metric
 
 
-def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_to_videos, total_time, num_queries, num_candidates):
+def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_to_videos,
+                             total_time, num_queries, num_candidates, handoff_cap=0):
     """Compute detailed evaluation metrics."""
-    metrics = compute_candidate_hit_metrics(
-        predictions,
-        ground_truth_video_ids,
-        sid_to_videos,
-        ks=(20, 50, 100),
-    )
+    metric_ks = [20, 50, 100]
+    if handoff_cap and handoff_cap > 0:
+        for k in (200, 300, handoff_cap):
+            if k not in metric_ks:
+                metric_ks.append(k)
+    metrics = compute_result_candidate_hit_metrics(results, ground_truth_video_ids, ks=tuple(metric_ks))
+
+    total = len(ground_truth_video_ids)
+    full_hits = 0
+    pre_cap_hits = 0
+    pre_cap_count = 0
+    has_pre_cap = False
+    for result, gt_video_id in zip(results, ground_truth_video_ids):
+        ranked_videos = _result_candidate_video_ids(result)
+        gt_base_video_id = strip_video_suffix(str(gt_video_id))
+        if gt_base_video_id in ranked_videos:
+            full_hits += 1
+        if 'pre_cap_gt_hit' in result:
+            has_pre_cap = True
+            pre_cap_hits += int(bool(result.get('pre_cap_gt_hit')))
+            pre_cap_count += int(result.get('pre_cap_num_candidates', len(ranked_videos)))
+
+    metrics['FullSetHit@All'] = full_hits / total * 100 if total else 0.0
+    if handoff_cap and handoff_cap > 0:
+        metrics[f'PoolHit@{handoff_cap}'] = metrics['FullSetHit@All']
+        metrics['candidate_handoff_cap'] = handoff_cap
+    if has_pre_cap:
+        metrics['PreCapFullSetHit@All'] = pre_cap_hits / total * 100 if total else 0.0
+        metrics['pre_cap_avg_candidates_per_query'] = round(pre_cap_count / total, 2) if total else 0.0
 
     metrics['seconds_per_query'] = total_time / num_queries if num_queries > 0 else 0
     metrics['total_queries'] = num_queries
@@ -514,7 +647,11 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
         "index_type": "videorqvae",
         "code_book_size": code_num,
         "code_book_num": num_latent_tokens,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "access_reorder_enabled": bool(config.get('inference_reorder_by_access_score', False)),
+        "access_video_lambda": config.get('access_score_video_lambda', 0.0),
+        "access_bucket_gamma": config.get('access_score_bucket_gamma', 0.0),
+        "candidate_handoff_cap": config.get('candidate_handoff_cap', 0),
     }
 
     output_data = {
@@ -557,6 +694,10 @@ def test(config):
     cache_dir = config.get('cache_dir', './cache')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
     detailed_generation = config.get('detailed_generation', False)
+    use_access_reorder = config.get('inference_reorder_by_access_score', False)
+    access_video_lambda = config.get('access_score_video_lambda', 0.0)
+    access_bucket_gamma = config.get('access_score_bucket_gamma', 0.0)
+    handoff_cap = int(config.get('candidate_handoff_cap', 0) or 0)
 
     print(f'Loading features for {dataset_name}...')
     feature_cache = load_shared_features(
@@ -662,6 +803,15 @@ def test(config):
 
     print(f'Test video embeddings shape: {test_video_emb.shape}')
     print(f'Test query embeddings shape: {test_query_emb.shape}')
+    video_embedding_lookup = None
+    if use_access_reorder:
+        video_embedding_lookup = build_video_embedding_lookup(test_video_keys, test_video_emb)
+        print(
+            'Access-score reorder enabled: '
+            f'video_lambda={access_video_lambda}, bucket_gamma={access_bucket_gamma}'
+        )
+    if handoff_cap > 0:
+        print(f'Candidate handoff cap enabled: top {handoff_cap} videos per query after ranking')
 
     # Generate semantic IDs
     if detailed_generation and setting == 1:
@@ -700,6 +850,16 @@ def test(config):
                 train_sample_codes_dict[base_video_id] = codes
 
         print(f"Train videos: {len(raw_train_codes)} samples -> {len(train_sample_codes_dict)} unique videos")
+
+        if use_access_reorder:
+            print("Encoding train video embeddings for access-score reorder...")
+            train_video_emb, _, train_video_keys = our_encode_dual(
+                train_data_loader, model, type='video', return_all=True
+            )
+            train_video_lookup = build_video_embedding_lookup(train_video_keys, train_video_emb)
+            train_video_lookup.update(video_embedding_lookup)
+            video_embedding_lookup = train_video_lookup
+            print(f"Access-score video embedding lookup: {len(video_embedding_lookup)} videos")
 
         train_sid_stats = compute_sid_collision_stats(train_sample_codes_dict, num_latent_tokens or 0)
         print(
@@ -757,7 +917,7 @@ def test(config):
 
     results = []
     num_candidates = config.get('num_candidates', 20)
-    start_time = time.time()
+    generation_start_time = time.time()
 
     tk0 = tqdm(data_loader, total=len(data_loader))
     output_all = []
@@ -796,39 +956,36 @@ def test(config):
             output_all.extend(new_output)
             scores_all.extend(new_scores)
 
-    end_time = time.time()
-    total_time = end_time - start_time
+    generation_time = time.time() - generation_start_time
 
     predictions = []
+    reorder_start_time = time.time()
     for idx, (generated_codes, beam_scores) in enumerate(zip(output_all, scores_all)):
         sample = dataset.samples[idx]
         query_text = sample['caption']
         gt_video_id = sample['video_id']
 
-        seen_sids = set()
-        sid_list = []
-        ranked_videos = []
-        ranked_videos_with_sid = []
-        ranked_scores = []
-        seen_videos = set()
-
-        for code, score in zip(generated_codes, beam_scores):
-            code_str = str(code)
-
-            if code_str not in seen_sids:
-                seen_sids.add(code_str)
-                sid_list.append(code_str)
-
-            if code_str in sid_to_videos:
-                for video_id in sid_to_videos[code_str]:
-                    base_video_id = strip_video_suffix(str(video_id))
-                    if base_video_id not in seen_videos:
-                        seen_videos.add(base_video_id)
-                        ranked_videos.append(base_video_id)
-                        ranked_videos_with_sid.append([code_str, base_video_id])
-                        ranked_scores.append(score)
+        sid_list, ranked_videos, ranked_videos_with_sid, ranked_scores = rank_expanded_candidates(
+            generated_codes,
+            beam_scores,
+            sid_to_videos,
+            query_embedding=test_query_emb[idx] if idx < len(test_query_emb) else None,
+            video_embedding_lookup=video_embedding_lookup,
+            use_access_score=use_access_reorder,
+            video_lambda=access_video_lambda,
+            bucket_gamma=access_bucket_gamma,
+        )
 
         cleaned_gt_video_id = strip_video_suffix(gt_video_id)
+        pre_cap_ranked_videos = list(ranked_videos)
+        pre_cap_num_candidates = len(pre_cap_ranked_videos)
+        pre_cap_gt_hit = cleaned_gt_video_id in pre_cap_ranked_videos
+
+        if handoff_cap > 0:
+            ranked_videos = ranked_videos[:handoff_cap]
+            ranked_videos_with_sid = ranked_videos_with_sid[:handoff_cap]
+            ranked_scores = ranked_scores[:handoff_cap]
+
         cleaned_ranked_videos = ranked_videos
 
         result = {
@@ -852,9 +1009,15 @@ def test(config):
 
         result["scores"] = ranked_scores
         result["num_candidates"] = len(cleaned_ranked_videos)
+        if handoff_cap > 0:
+            result["pre_cap_num_candidates"] = pre_cap_num_candidates
+            result["pre_cap_gt_hit"] = bool(pre_cap_gt_hit)
         results.append(result)
 
         predictions.append(sid_list)
+
+    reorder_time = time.time() - reorder_start_time
+    total_time = generation_time + reorder_time
 
     eval_results = eval_all(predictions, query_labels)
     print('sID diagnostic (not candidate hit)', eval_results)
@@ -869,10 +1032,16 @@ def test(config):
         total_time,
         num_queries,
         num_candidates,
+        handoff_cap,
     )
+    metrics['generation_seconds_per_query'] = generation_time / num_queries if num_queries > 0 else 0
+    metrics['reorder_seconds_per_query'] = reorder_time / num_queries if num_queries > 0 else 0
+    metrics['access_reorder_enabled'] = bool(use_access_reorder)
+    metrics['access_video_lambda'] = access_video_lambda
+    metrics['access_bucket_gamma'] = access_bucket_gamma
 
     timestamp = time.strftime('%m%d%H%M')
-    candidates_dir = "candidates"
+    candidates_dir = config.get('candidate_output_dir', "candidates")
     save_candidates_json(results, metrics, config, candidates_dir, timestamp)
 
 
