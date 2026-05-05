@@ -123,6 +123,8 @@ def parse_args():
                        help='If >0, cap the final candidate JSON to this many videos per query after optional BARS reorder')
     parser.add_argument('--candidate_output_dir', type=str, default='candidates',
                        help='Directory for exported candidate JSON')
+    parser.add_argument('--candidate_sidecar_dir', type=str, default=None,
+                       help='Optional directory for per-query candidate audit JSONL sidecars')
 
     parser.add_argument('--save_path', type=str, default='output/GRDR/bucket_candidate_k20')
     parser.add_argument('--exp_name', type=str, default='fit_bucket_l010_g10_k20_s42', help='Experiment name for wandb and save path')

@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-from torch import nn, Tensor
+from torch import nn
 from tqdm import tqdm
 from transformers.generation.utils import GenerationMixin
 from transformers.modeling_outputs import ModelOutput

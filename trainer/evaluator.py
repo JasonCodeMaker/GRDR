@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import time
 from collections import defaultdict, Counter
@@ -351,6 +352,32 @@ def _result_candidate_video_ids(result):
     return [strip_video_suffix(str(item)) for item in candidates]
 
 
+def _rank_video_id(ranked_videos, gt_video_id):
+    gt_base_video_id = strip_video_suffix(str(gt_video_id))
+    for idx, video_id in enumerate(ranked_videos, start=1):
+        if strip_video_suffix(str(video_id)) == gt_base_video_id:
+            return idx
+    return None
+
+
+def _mean_log_discount(ranks):
+    if not ranks:
+        return 0.0
+    total = 0.0
+    for rank in ranks:
+        if rank:
+            total += 1.0 / math.log2(rank + 1)
+    return total / len(ranks)
+
+
+def _nearest_rank_p95(values):
+    if not values:
+        return 0
+    sorted_values = sorted(values)
+    idx = max(0, math.ceil(0.95 * len(sorted_values)) - 1)
+    return sorted_values[idx]
+
+
 def compute_result_candidate_hit_metrics(results, ground_truth_video_ids, ks=(20, 50, 100)):
     """Compute candidate hit from the final exported ranking."""
     hits = {k: 0 for k in ks}
@@ -560,8 +587,18 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
     return results, overall_metric
 
 
+def _candidate_budget_contract(setting):
+    try:
+        setting_value = int(setting)
+    except (TypeError, ValueError):
+        setting_value = setting
+    if setting_value == 2:
+        return 310, 'compact-valid', 'diagnostic-only'
+    return None, 'not-applicable', 'not-applicable'
+
+
 def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_to_videos,
-                             total_time, num_queries, num_candidates, handoff_cap=0):
+                             total_time, num_queries, num_candidates, handoff_cap=0, setting=1):
     """Compute detailed evaluation metrics."""
     metric_ks = [20, 50, 100]
     if handoff_cap and handoff_cap > 0:
@@ -575,15 +612,28 @@ def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_t
     pre_cap_hits = 0
     pre_cap_count = 0
     has_pre_cap = False
+    post_cap_ranks = []
+    pre_cap_ranks = []
+    post_cap_counts = []
+    pre_cap_counts = []
     for result, gt_video_id in zip(results, ground_truth_video_ids):
         ranked_videos = _result_candidate_video_ids(result)
-        gt_base_video_id = strip_video_suffix(str(gt_video_id))
-        if gt_base_video_id in ranked_videos:
+        post_cap_counts.append(int(result.get('num_candidates', len(ranked_videos))))
+        post_cap_rank = _rank_video_id(ranked_videos, gt_video_id)
+        post_cap_ranks.append(post_cap_rank)
+        if post_cap_rank is not None:
             full_hits += 1
         if 'pre_cap_gt_hit' in result:
             has_pre_cap = True
             pre_cap_hits += int(bool(result.get('pre_cap_gt_hit')))
-            pre_cap_count += int(result.get('pre_cap_num_candidates', len(ranked_videos)))
+            pre_cap_num_candidates = int(result.get('pre_cap_num_candidates', len(ranked_videos)))
+            pre_cap_count += pre_cap_num_candidates
+            pre_cap_counts.append(pre_cap_num_candidates)
+            pre_cap_ranked_videos = result.get('_pre_cap_ranked_videos')
+            if pre_cap_ranked_videos is None:
+                pre_cap_ranks.append(post_cap_rank if result.get('pre_cap_gt_hit') else None)
+            else:
+                pre_cap_ranks.append(_rank_video_id(pre_cap_ranked_videos, gt_video_id))
 
     metrics['FullSetHit@All'] = full_hits / total * 100 if total else 0.0
     if handoff_cap and handoff_cap > 0:
@@ -592,6 +642,9 @@ def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_t
     if has_pre_cap:
         metrics['PreCapFullSetHit@All'] = pre_cap_hits / total * 100 if total else 0.0
         metrics['pre_cap_avg_candidates_per_query'] = round(pre_cap_count / total, 2) if total else 0.0
+        metrics['pre_cap_p95_candidates_per_query'] = _nearest_rank_p95(pre_cap_counts)
+        metrics['pre_cap_max_candidates_per_query'] = max(pre_cap_counts) if pre_cap_counts else 0
+        metrics['PreCapMeanLogDiscount'] = _mean_log_discount(pre_cap_ranks)
 
     metrics['seconds_per_query'] = total_time / num_queries if num_queries > 0 else 0
     metrics['total_queries'] = num_queries
@@ -599,8 +652,23 @@ def compute_detailed_metrics(results, predictions, ground_truth_video_ids, sid_t
 
     avg_candidates = sum(r['num_candidates'] for r in results) / len(results) if results else 0
     metrics['avg_candidates_per_query'] = round(avg_candidates, 2)
+    metrics['p95_candidates_per_query'] = _nearest_rank_p95(post_cap_counts)
+    metrics['max_candidates_per_query'] = max(post_cap_counts) if post_cap_counts else 0
+    metrics['MeanLogDiscount'] = _mean_log_discount(post_cap_ranks)
+    candidate_budget_gate, valid_status, overflow_status = _candidate_budget_contract(setting)
+    metrics['candidate_budget_gate'] = candidate_budget_gate
+    metrics['compact_status'] = (
+        valid_status
+        if candidate_budget_gate is None or metrics['avg_candidates_per_query'] <= candidate_budget_gate
+        else overflow_status
+    )
 
     return metrics
+
+
+def _public_candidate_result(result):
+    """Drop in-memory audit fields before writing the candidate JSON."""
+    return {key: value for key, value in result.items() if not key.startswith('_')}
 
 
 def save_candidates_json(results, metrics, config, output_dir, timestamp):
@@ -612,7 +680,6 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
     num_latent_tokens = config.get('num_latent_tokens', 4)
     model_name = config.get('prev_model', 'unknown')
     setting = config.get('setting', 1)
-
     metadata = {
         "dataset": dataset,
         "model_name": model_name,
@@ -625,11 +692,12 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
         "access_bucket_gamma": config.get('access_score_bucket_gamma', 0.0),
         "candidate_handoff_cap": config.get('candidate_handoff_cap', 0),
     }
+    output_metrics = dict(metrics)
 
     output_data = {
         "metadata": metadata,
-        "metrics": metrics,
-        "results": results
+        "metrics": output_metrics,
+        "results": [_public_candidate_result(result) for result in results]
     }
 
     filename = f"{dataset}_c{code_num}l{code_length}_{num_candidates}_candidates_t{setting}.json"
@@ -644,6 +712,47 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
     print(f"Candidates JSON saved to: {filepath}")
     print(f"{'='*80}\n")
 
+    return filepath
+
+
+def build_candidate_sidecar_row(result, ground_truth_video_id):
+    """Build one post-hoc audit row without changing candidate JSON output."""
+    selected_candidate_ids = _result_candidate_video_ids(result)
+    pre_cap_ranked_videos = result.get('_pre_cap_ranked_videos', selected_candidate_ids)
+    pre_cap_gt_rank = _rank_video_id(pre_cap_ranked_videos, ground_truth_video_id)
+    post_cap_gt_rank = _rank_video_id(selected_candidate_ids, ground_truth_video_id)
+
+    return {
+        "query_idx": result["query_idx"],
+        "ground_truth_video_id": strip_video_suffix(str(ground_truth_video_id)),
+        "pre_cap_num_candidates": int(result.get('pre_cap_num_candidates', len(pre_cap_ranked_videos))),
+        "post_cap_num_candidates": int(result.get('num_candidates', len(selected_candidate_ids))),
+        "pre_cap_gt_rank": pre_cap_gt_rank,
+        "post_cap_gt_rank": post_cap_gt_rank,
+        "PreCapVisible": pre_cap_gt_rank is not None,
+        "PostCapVisible": post_cap_gt_rank is not None,
+        "CapDrop": pre_cap_gt_rank is not None and post_cap_gt_rank is None,
+        "selected_candidate_ids": selected_candidate_ids,
+        "selected_scores": list(result.get('scores', [])),
+        "generated_sids": list(result.get('_generated_sids', result.get('generated_sids', []))),
+    }
+
+
+def save_candidate_sidecar_jsonl(results, ground_truth_video_ids, config, output_dir, timestamp):
+    dataset = config.get('dataset', 'unknown')
+    code_num = config.get('code_num', 0)
+    code_length = config.get('max_length', 0)
+    num_candidates = max(1, config.get('num_candidates', 20))
+    setting = config.get('setting', 1)
+    filename = f"{dataset}_c{code_num}l{code_length}_{num_candidates}_candidates_t{setting}.sidecar.jsonl"
+
+    os.makedirs(output_dir, exist_ok=True)
+    filepath = os.path.join(output_dir, filename)
+    with open(filepath, 'w', encoding='utf-8') as f:
+        for result, gt_video_id in zip(results, ground_truth_video_ids):
+            f.write(json.dumps(build_candidate_sidecar_row(result, gt_video_id), ensure_ascii=False) + '\n')
+
+    print(f"Candidate sidecar JSONL saved to: {filepath}")
     return filepath
 
 
@@ -889,7 +998,10 @@ def test(config):
                 output_scores=True
             )
             output = gen_output.sequences
-            batch_scores = gen_output.sequences_scores.cpu().tolist()
+            if getattr(gen_output, "sequences_scores", None) is None:
+                batch_scores = [0.0] * len(output)
+            else:
+                batch_scores = gen_output.sequences_scores.cpu().tolist()
 
             beam = []
             beam_scores = []
@@ -927,6 +1039,7 @@ def test(config):
 
         cleaned_gt_video_id = strip_video_suffix(gt_video_id)
         pre_cap_ranked_videos = list(ranked_videos)
+        pre_cap_ranked_scores = list(ranked_scores)
         pre_cap_num_candidates = len(pre_cap_ranked_videos)
         pre_cap_gt_hit = cleaned_gt_video_id in pre_cap_ranked_videos
 
@@ -958,6 +1071,9 @@ def test(config):
 
         result["scores"] = ranked_scores
         result["num_candidates"] = len(cleaned_ranked_videos)
+        result["_generated_sids"] = sid_list
+        result["_pre_cap_ranked_videos"] = pre_cap_ranked_videos
+        result["_pre_cap_ranked_scores"] = pre_cap_ranked_scores
         if handoff_cap > 0:
             result["pre_cap_num_candidates"] = pre_cap_num_candidates
             result["pre_cap_gt_hit"] = bool(pre_cap_gt_hit)
@@ -982,6 +1098,7 @@ def test(config):
         num_queries,
         num_candidates,
         handoff_cap,
+        setting=config.get('setting', 1),
     )
     metrics['generation_seconds_per_query'] = generation_time / num_queries if num_queries > 0 else 0
     metrics['reorder_seconds_per_query'] = reorder_time / num_queries if num_queries > 0 else 0
@@ -991,6 +1108,9 @@ def test(config):
     timestamp = time.strftime('%m%d%H%M')
     candidates_dir = config.get('candidate_output_dir', "candidates")
     save_candidates_json(results, metrics, config, candidates_dir, timestamp)
+    sidecar_dir = config.get('candidate_sidecar_dir')
+    if sidecar_dir:
+        save_candidate_sidecar_jsonl(results, gt_video_ids, config, sidecar_dir, timestamp)
 
 
 def kmeans(x, ncentroids=10, niter=100, seed=42):
