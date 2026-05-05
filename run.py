@@ -116,13 +116,11 @@ def parse_args():
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
     parser.add_argument('--inference_reorder_by_access_score', action='store_true', default=False,
-                       help='Reorder expanded candidates using generated beam scores plus cached video access score')
-    parser.add_argument('--access_score_video_lambda', type=float, default=0.0,
-                       help='Video similarity weight for inference access-score reorder')
+                       help='Reorder expanded candidates with BARS beam score plus bucket penalty')
     parser.add_argument('--access_score_bucket_gamma', type=float, default=0.0,
-                       help='Bucket-size penalty weight for inference access-score reorder')
+                       help='Bucket-size penalty weight for BARS reorder')
     parser.add_argument('--candidate_handoff_cap', type=int, default=0,
-                       help='If >0, cap the final candidate JSON to this many videos per query after optional access-score reorder')
+                       help='If >0, cap the final candidate JSON to this many videos per query after optional BARS reorder')
     parser.add_argument('--candidate_output_dir', type=str, default='candidates',
                        help='Directory for exported candidate JSON')
 

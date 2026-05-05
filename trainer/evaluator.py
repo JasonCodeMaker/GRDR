@@ -250,32 +250,10 @@ def strip_video_suffix(video_id):
     return video_id
 
 
-def build_video_embedding_lookup(video_keys, video_embeddings):
-    """Build base video id -> route-token embeddings."""
-    lookup = {}
-    for key, embedding in zip(video_keys, video_embeddings):
-        base_key = strip_video_suffix(str(key))
-        if base_key not in lookup:
-            lookup[base_key] = embedding
-    return lookup
-
-
-def _max_video_similarity(query_embedding, video_embedding):
-    if query_embedding is None or video_embedding is None:
-        return 0.0
-    query = np.asarray(query_embedding, dtype=np.float32)
-    video = np.asarray(video_embedding, dtype=np.float32)
-    if video.ndim == 1:
-        video = video.reshape(1, -1)
-    query = query / (np.linalg.norm(query) + 1e-8)
-    video = video / (np.linalg.norm(video, axis=1, keepdims=True) + 1e-8)
-    return float(np.max(video @ query))
-
-
-def rank_expanded_candidates(generated_codes, beam_scores, sid_to_videos, query_embedding=None,
-                             video_embedding_lookup=None, use_access_score=False,
-                             video_lambda=0.0, bucket_gamma=0.0):
-    """Expand generated routes to deduplicated videos, optionally access-score sorted."""
+def rank_expanded_candidates(generated_codes, beam_scores, sid_to_videos,
+                             use_access_score=False, bucket_gamma=0.0):
+    """Expand generated routes to deduplicated videos, optionally BARS-score sorted."""
+    bucket_gamma = float(bucket_gamma or 0.0)
     seen_sids = set()
     sid_list = []
     ranked_videos = []
@@ -308,14 +286,9 @@ def rank_expanded_candidates(generated_codes, beam_scores, sid_to_videos, query_
             if base_video_id not in candidate_first_idx:
                 candidate_first_idx[base_video_id] = candidate_counter
                 candidate_counter += 1
-            video_sim = _max_video_similarity(
-                query_embedding,
-                video_embedding_lookup.get(base_video_id) if video_embedding_lookup else None
-            )
             access_score = (
                 float(beam_score)
-                + float(video_lambda) * video_sim
-                - float(bucket_gamma) * np.log1p(max(bucket_size, 1))
+                - bucket_gamma * np.log1p(max(bucket_size, 1))
             )
             candidate_scores.setdefault(base_video_id, []).append(access_score)
             candidate_entries[base_video_id].append((access_score, code_str, base_video_id))
@@ -649,7 +622,6 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
         "code_book_num": num_latent_tokens,
         "timestamp": timestamp,
         "access_reorder_enabled": bool(config.get('inference_reorder_by_access_score', False)),
-        "access_video_lambda": config.get('access_score_video_lambda', 0.0),
         "access_bucket_gamma": config.get('access_score_bucket_gamma', 0.0),
         "candidate_handoff_cap": config.get('candidate_handoff_cap', 0),
     }
@@ -695,7 +667,6 @@ def test(config):
     use_pseudo_queries = config.get('use_pseudo_queries', False)
     detailed_generation = config.get('detailed_generation', False)
     use_access_reorder = config.get('inference_reorder_by_access_score', False)
-    access_video_lambda = config.get('access_score_video_lambda', 0.0)
     access_bucket_gamma = config.get('access_score_bucket_gamma', 0.0)
     handoff_cap = int(config.get('candidate_handoff_cap', 0) or 0)
 
@@ -796,19 +767,10 @@ def test(config):
     print(f'Test {best_model_path}')
     safe_load(model, best_model_path)
 
-    # Dense Retrieval Evaluation
-    print('Evaluating Dense Retrieval on test set...')
-    (test_video_emb, _, test_video_keys,
-     test_query_emb, _, test_query_keys) = our_encode_dual(data_loader, model, type='both', return_all=True)
-
-    print(f'Test video embeddings shape: {test_video_emb.shape}')
-    print(f'Test query embeddings shape: {test_query_emb.shape}')
-    video_embedding_lookup = None
     if use_access_reorder:
-        video_embedding_lookup = build_video_embedding_lookup(test_video_keys, test_video_emb)
         print(
-            'Access-score reorder enabled: '
-            f'video_lambda={access_video_lambda}, bucket_gamma={access_bucket_gamma}'
+            'BARS reorder enabled: '
+            f'bucket_gamma={access_bucket_gamma}'
         )
     if handoff_cap > 0:
         print(f'Candidate handoff cap enabled: top {handoff_cap} videos per query after ranking')
@@ -850,16 +812,6 @@ def test(config):
                 train_sample_codes_dict[base_video_id] = codes
 
         print(f"Train videos: {len(raw_train_codes)} samples -> {len(train_sample_codes_dict)} unique videos")
-
-        if use_access_reorder:
-            print("Encoding train video embeddings for access-score reorder...")
-            train_video_emb, _, train_video_keys = our_encode_dual(
-                train_data_loader, model, type='video', return_all=True
-            )
-            train_video_lookup = build_video_embedding_lookup(train_video_keys, train_video_emb)
-            train_video_lookup.update(video_embedding_lookup)
-            video_embedding_lookup = train_video_lookup
-            print(f"Access-score video embedding lookup: {len(video_embedding_lookup)} videos")
 
         train_sid_stats = compute_sid_collision_stats(train_sample_codes_dict, num_latent_tokens or 0)
         print(
@@ -969,10 +921,7 @@ def test(config):
             generated_codes,
             beam_scores,
             sid_to_videos,
-            query_embedding=test_query_emb[idx] if idx < len(test_query_emb) else None,
-            video_embedding_lookup=video_embedding_lookup,
             use_access_score=use_access_reorder,
-            video_lambda=access_video_lambda,
             bucket_gamma=access_bucket_gamma,
         )
 
@@ -1037,7 +986,6 @@ def test(config):
     metrics['generation_seconds_per_query'] = generation_time / num_queries if num_queries > 0 else 0
     metrics['reorder_seconds_per_query'] = reorder_time / num_queries if num_queries > 0 else 0
     metrics['access_reorder_enabled'] = bool(use_access_reorder)
-    metrics['access_video_lambda'] = access_video_lambda
     metrics['access_bucket_gamma'] = access_bucket_gamma
 
     timestamp = time.strftime('%m%d%H%M')
