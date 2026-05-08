@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-GRDR_ROOT = Path(__file__).resolve().parent.parent
+GRDR_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = GRDR_ROOT / "dataset" / "Panda-70M-10M" / "video_retreival_caption"
 DEFAULT_SOURCE_JSON = DATA_ROOT / "panda_10m_ret_train.json"
 DEFAULT_INPUT_JSON = DATA_ROOT / "panda_10m_ret_train_addition.json"

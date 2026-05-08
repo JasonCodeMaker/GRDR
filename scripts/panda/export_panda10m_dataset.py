@@ -37,7 +37,7 @@ except ImportError as exc:  # pragma: no cover - runtime dependency check
     ) from exc
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE_ROOT = Path("/data2/uqzzha35/VideoRetrieval/Panda-70M-10M")
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "dataset" / "Panda-70M-10M"
 

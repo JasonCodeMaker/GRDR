@@ -18,7 +18,7 @@ from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
 from tqdm import tqdm
 
-GRDR_ROOT = Path(__file__).resolve().parent.parent
+GRDR_ROOT = Path(__file__).resolve().parents[2]
 IV2_ROOT = Path('/home/uqzzha35/Project/SemanticID/MM-SemanticTVR/data_process/InternVideo2')
 sys.path.insert(0, str(IV2_ROOT))
 
@@ -95,12 +95,12 @@ def _skip_none_collate(batch):
     return frames, ids
 
 
-def load_records(split):
+def load_records(split, annotation_root):
     """Return [(clip_id, caption), ...] with stripped split-prefixed ids."""
     if split == 'train_pesudo':
-        path = PANDA_ANNO_ROOT / 'panda_10m_ret_train_addition.json'
+        path = annotation_root / 'panda_10m_ret_train_addition.json'
     else:
-        path = PANDA_ANNO_ROOT / f'panda_10m_ret_{split}.json'
+        path = annotation_root / f'panda_10m_ret_{split}.json'
     with open(path) as f:
         anns = json.load(f)
     records = []
@@ -132,8 +132,8 @@ def load_partial(path):
 
 
 def extract_video(model, clip_ids, split, args, device, use_bf16):
-    out_path = OUTPUT_ROOT / f'video_embeddings_{split}.pkl'
-    partial = OUTPUT_ROOT / f'video_embeddings_{split}.partial.pkl'
+    out_path = args.output_root / f'video_embeddings_{split}.pkl'
+    partial = args.output_root / f'video_embeddings_{split}.partial.pkl'
     if out_path.exists():
         print(f'[video] {out_path.name} exists, skipping')
         return
@@ -147,7 +147,7 @@ def extract_video(model, clip_ids, split, args, device, use_bf16):
         return
 
     print(f'[video] split={split} todo={len(todo)} done={len(features)}')
-    frames_root = PANDA_FRAMES_ROOT / split
+    frames_root = args.frames_root / split
     dataset = PandaFrameDataset(todo, frames_root, build_transform(), NUM_FRAMES)
     loader = DataLoader(
         dataset,
@@ -182,7 +182,7 @@ def extract_video(model, clip_ids, split, args, device, use_bf16):
 
 
 def extract_text(model, tokenizer, records, split, args, device, use_bf16):
-    out_path = OUTPUT_ROOT / f'text_embeddings_{split}.pkl'
+    out_path = args.output_root / f'text_embeddings_{split}.pkl'
     if out_path.exists():
         print(f'[text] {out_path.name} exists, skipping')
         return
@@ -227,7 +227,13 @@ def main():
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--text_batch_size', type=int, default=256)
     parser.add_argument('--max_txt_l', type=int, default=40)
+    parser.add_argument('--frames-root', type=Path, default=PANDA_FRAMES_ROOT)
+    parser.add_argument('--annotation-root', type=Path, default=PANDA_ANNO_ROOT)
+    parser.add_argument('--output-root', type=Path, default=OUTPUT_ROOT)
     args = parser.parse_args()
+    args.frames_root = args.frames_root.resolve()
+    args.annotation_root = args.annotation_root.resolve()
+    args.output_root = args.output_root.resolve()
 
     # Caller is expected to set CUDA_VISIBLE_DEVICES before python starts
     # (the accompanying shell wrapper does this). --gpu_id is the logical
@@ -241,7 +247,7 @@ def main():
     print(f'[model] loading InternVideo2-1B from {args.checkpoint}')
     model, tokenizer = load_model_and_tokenizer(config, args.checkpoint, device)
 
-    records = load_records(args.split)
+    records = load_records(args.split, args.annotation_root)
     clip_ids = list(dict.fromkeys(r[0] for r in records))
     print(f'[data] split={args.split} captions={len(records)} unique_clips={len(clip_ids)}')
 

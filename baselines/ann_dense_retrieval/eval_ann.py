@@ -63,6 +63,9 @@ def parse_args():
     parser.add_argument('--num_candidates', type=int, default=None,
                         help='K for candidate output. Defaults to ANN_BASELINE_NUM_CANDIDATES[(ds,setting)] if unset.')
     parser.add_argument('--candidate_dir', type=str, default='candidates')
+    parser.add_argument('--query_manifest', type=str, default=None,
+                        help='Optional TSV with query_text and ground_truth_video_id columns. '
+                             'When set, this defines the exact exported query row set.')
     parser.add_argument('--per_query_timing', action='store_true',
                         help='Run online evaluation one query at a time; each '
                              'query reloads video features from disk and records '
@@ -141,6 +144,16 @@ def load_test_queries(dataset):
                 if len(parts) >= 6:
                     pairs.append((parts[0], parts[5]))
         return pairs
+
+
+def load_query_manifest(path):
+    """Load package-owned query rows as (video_id, caption_text) pairs."""
+    with open(path, newline='') as f:
+        rows = list(csv.DictReader(f, delimiter='\t'))
+    missing = [col for col in ('ground_truth_video_id', 'query_text') if rows and col not in rows[0]]
+    if missing:
+        raise ValueError(f"query manifest {path} missing columns: {missing}")
+    return [(row['ground_truth_video_id'], row['query_text']) for row in rows]
 
 
 def load_train_video_ids(dataset):
@@ -579,6 +592,8 @@ def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k)
 
     ranks = np.full(n, k + 1, dtype=np.float64)
     for i in range(n):
+        if gt_indices[i] < 0:
+            continue
         m = np.where(retrieved[i] == gt_indices[i])[0]
         if len(m) > 0:
             ranks[i] = m[0]
@@ -634,6 +649,8 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
 
     ranks = np.full(n, k + 1, dtype=np.float64)
     for i in range(n):
+        if gt_indices[i] < 0:
+            continue
         m = np.where(retrieved[i] == gt_indices[i])[0]
         if len(m) > 0:
             ranks[i] = m[0]
@@ -761,7 +778,11 @@ def main():
     print(f"{'='*70}\n")
 
     # 1. Load test queries (raw IDs).
-    test_pairs = load_test_queries(args.dataset)
+    if args.query_manifest:
+        test_pairs = load_query_manifest(args.query_manifest)
+        print(f"Loaded query manifest: {args.query_manifest}")
+    else:
+        test_pairs = load_test_queries(args.dataset)
     raw_test_ids = [vid for vid, _ in test_pairs]
     test_captions = [cap for _, cap in test_pairs]
     # Strip clip-suffix and dedupe to get the test pool base IDs.
@@ -794,18 +815,17 @@ def main():
 
     vid_to_pool_idx = {vid: i for i, vid in enumerate(valid_pool_ids)}
 
-    # 4. Build GT indices using base-stripped query video ids.
-    gt_indices, valid_query_mask, valid_gt_vids = [], [], []
+    # 4. Build GT indices using base-stripped query video ids. Keep every
+    # query in the export; if its GT video is absent from the ANN pool, the
+    # query remains in the metric denominator and is evaluated as a miss.
+    gt_indices, gt_vids = [], []
     for vid, _ in test_pairs:
         base = strip_clip_suffix(vid)
-        if base in vid_to_pool_idx:
-            gt_indices.append(vid_to_pool_idx[base])
-            valid_query_mask.append(True)
-            valid_gt_vids.append(base)
-        else:
-            valid_query_mask.append(False)
+        gt_indices.append(vid_to_pool_idx.get(base, -1))
+        gt_vids.append(base)
     gt_indices = np.array(gt_indices)
-    print(f"Valid queries with GT in pool: {len(gt_indices)}/{len(test_pairs)}")
+    gt_in_pool = int(np.sum(gt_indices >= 0))
+    print(f"Queries with GT in pool: {gt_in_pool}/{len(test_pairs)}")
 
     # 5. Load CLIP weights from XPool checkpoint.
     print(f"\nLoading X-Pool checkpoint: {args.checkpoint}")
@@ -817,13 +837,11 @@ def main():
     clip_model = clip_model.to(device).eval()
     tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
-    valid_captions = [cap for cap, ok in zip(test_captions, valid_query_mask) if ok]
-
     # Throughput-mode pre-encoding (only when not in per-query timing mode).
     if not args.per_query_timing:
         query_embs = encode_text_queries_batched(
-            valid_captions, clip_model, tokenizer, device, args.batch_size)
-        print(f"Encoded {len(valid_captions)} text queries, dim={query_embs.shape[1]}")
+            test_captions, clip_model, tokenizer, device, args.batch_size)
+        print(f"Encoded {len(test_captions)} text queries, dim={query_embs.shape[1]}")
 
     # 6. Build indices and evaluate.
     search_k = max(100, args.num_candidates)
@@ -862,7 +880,7 @@ def main():
 
         if args.per_query_timing:
             metrics, retrieved, distances, per_query_timings = search_per_query(
-                valid_captions, clip_model, tokenizer, device, index_path,
+                test_captions, clip_model, tokenizer, device, index_path,
                 saved_pool_ids,
                 idx_type, args, gt_indices, search_k, args.num_warmup)
         else:
@@ -900,7 +918,7 @@ def main():
                          f"_{args.num_candidates}_candidates"
                          f"_t{args.setting}.json")
         cand_path = os.path.join(args.candidate_dir, cand_filename)
-        save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
+        save_candidate_json(retrieved, distances, test_captions, gt_vids,
                             saved_pool_ids, args.num_candidates, metrics, args,
                             idx_type, cand_path,
                             per_query_timings=per_query_timings)
@@ -916,7 +934,7 @@ def main():
             'dataset': args.dataset,
             'setting': args.setting,
             'num_candidates': args.num_candidates,
-            'num_queries': len(valid_captions),
+            'num_queries': len(test_captions),
             'pool_size': len(valid_pool_ids),
             'video_embedding_load_time_s': float(video_embedding_load_time_s),
             'per_query_timing': args.per_query_timing,

@@ -96,6 +96,8 @@ def parse_args():
                        help='Dataset name for video-text features')
     parser.add_argument('--features_root', type=str, default='dataset/features',
                        help='Root directory for InternVideo2 features')
+    parser.add_argument('--cache_dir', type=str, default='./cache',
+                       help='Directory for dataset-side caches such as text k-means groups')
     parser.add_argument('--videorqvae_checkpoint', type=str,
                        default=None,
                        help='VideoRQVAE checkpoint path for code generation (optional, creates new model if not provided)')

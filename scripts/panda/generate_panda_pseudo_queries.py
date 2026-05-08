@@ -18,7 +18,7 @@ from tqdm import tqdm
 from transformers import StoppingCriteriaList
 
 
-GRDR_ROOT = Path(__file__).resolve().parent.parent
+GRDR_ROOT = Path(__file__).resolve().parents[2]
 CAPTION_ROOT = Path("/data2/uqzzha35/VideoRetrieval/Panda-70M-10M/captioning")
 DEFAULT_FRAMES_ROOT = GRDR_ROOT / "dataset" / "Panda-70M-10M" / "panda_10m_frames" / "train"
 DEFAULT_SOURCE_JSON = GRDR_ROOT / "dataset" / "Panda-70M-10M" / "video_retreival_caption" / "panda_10m_ret_train.json"

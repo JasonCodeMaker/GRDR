@@ -23,7 +23,7 @@ from generate_panda_pseudo_queries import (
 )
 
 
-GRDR_ROOT = Path(__file__).resolve().parent.parent
+GRDR_ROOT = Path(__file__).resolve().parents[2]
 DATA_ROOT = GRDR_ROOT / "dataset" / "Panda-70M-10M" / "video_retreival_caption"
 DEFAULT_SOURCE_JSON = DATA_ROOT / "panda_10m_ret_train.json"
 DEFAULT_BASE_JSON = DATA_ROOT / "panda_10m_ret_train_addition.pre_repair_20260422.json"

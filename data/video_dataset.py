@@ -112,6 +112,11 @@ class VideoTextDataset(Dataset):
 
         # Load caption annotations
         self.samples = self._load_annotations()
+        if not self.samples:
+            raise RuntimeError(
+                f"No usable {split} samples for dataset={dataset_name}. "
+                "Check that annotation video IDs match the loaded feature keys."
+            )
 
         print(f"[VideoTextDataset] Loaded {len(self.samples)} {split} samples for {dataset_name}")
 

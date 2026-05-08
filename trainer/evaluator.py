@@ -324,13 +324,14 @@ def expand_sid_predictions_to_videos(generated_sids, sid_to_videos):
 
 
 def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_videos, ks=(20, 50, 100)):
-    """Compute candidate-expanded GT hit percentages at fixed video ranks."""
+    """Compute candidate-expanded GT hit percentages at fixed video ranks plus full-set hit."""
     if len(predictions) != len(ground_truth_video_ids):
         raise ValueError(
             f"Expected equal prediction/label counts, got {len(predictions)} and {len(ground_truth_video_ids)}"
         )
 
     hits = {k: 0 for k in ks}
+    full_hits = 0
     total = len(ground_truth_video_ids)
     for generated_sids, gt_video_id in zip(predictions, ground_truth_video_ids):
         ranked_videos = expand_sid_predictions_to_videos(generated_sids, sid_to_videos)
@@ -338,11 +339,15 @@ def compute_candidate_hit_metrics(predictions, ground_truth_video_ids, sid_to_vi
         for k in ks:
             if gt_base_video_id in ranked_videos[:k]:
                 hits[k] += 1
+        if gt_base_video_id in ranked_videos:
+            full_hits += 1
 
-    return {
+    metrics = {
         f"CanHit@{k}": (hits[k] / total * 100 if total else 0.0)
         for k in ks
     }
+    metrics["FullSetHit@All"] = full_hits / total * 100 if total else 0.0
+    return metrics
 
 
 def _result_candidate_video_ids(result):
@@ -575,7 +580,7 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
         accelerator.print(f'Selection metric CanHit@100: {selection_metric:.4f}')
 
         if accelerator.is_main_process:
-            wandb.log({f"eval/{k}": v for k, v in canhit_results.items()}, step=global_step)
+            wandb.log({f"test/{k}": v for k, v in canhit_results.items()}, step=global_step)
 
         results.update(canhit_results)
 
@@ -763,7 +768,7 @@ def test(config):
 
     model_name = config.get('model_name', 't5-small')
     code_num = config.get('code_num', 512)
-    code_length = config.get('code_length', 3)
+    code_length = config.get('code_length', config.get('max_length', 3))
     prev_id = config.get('prev_id', None)
     save_path = config.get('save_path', None)
     batch_size = config.get('batch_size')

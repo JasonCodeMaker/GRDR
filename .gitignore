@@ -1,46 +1,41 @@
-# Ignore dataset contents, but keep the folder
-dataset/*
-!dataset/.gitkeep
-
-# Ignore cache contents, but keep the folder
-cache/*
-!cache/.gitkeep
-
-reranker/xpool/video_features_cache
-reranker/xpool/ckpt/
-research/*
-!research/active/
-research/active/*
-!research/active/2026-04-15-msrvtt-tokenizer-health/
-!research/active/2026-04-15-msrvtt-tokenizer-health/**
-!research/active/2026-04-29-msrvtt-s2-hparam-tree/
-!research/active/2026-04-29-msrvtt-s2-hparam-tree/**
-var/   
-/index/
-output
-graphify-out
-wandb
-logs
-var/*
-!var/.gitkeep
-!var/research/
-var/research/*
-!var/research/.gitkeep
-.test_artifacts/
-data/*/none/
-output/baseline/
-candidates/baseline/
-candidates/*_ann_*_candidates_t*.json
-.claude/
-# ----------------------------------------------------------------------------
-# Python Runtime
-# ----------------------------------------------------------------------------
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 
-# Permanent local work directories
+# Local tools and scratch
+.claude/
+.test_artifacts/
+.worktrees/
 /test/
 /tests/
-/research/
+
+# Data, caches, and external assets
+/dataset/*
+!/dataset/.gitkeep
+/cache/*
+!/cache/.gitkeep
+/data/*/none/
+/reranker/xpool/video_features_cache
+/reranker/xpool/ckpt/*
+!/reranker/xpool/ckpt/.gitkeep
+
+# Runtime outputs
+/figures/
+/graphify-out/
+/index/
+/logs/
+/output
+/var
+/wandb/
+
+# Generated candidates
+/candidates/baseline/
+/candidates/*_ann_*_candidates_t*.json
+
+# Research packages are opt-in so abandoned directions stay local.
+/research/*
+/research/active/*
+/research/active/**/__pycache__/
+/research/active/**/*.py[cod]
