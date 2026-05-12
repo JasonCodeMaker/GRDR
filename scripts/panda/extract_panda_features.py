@@ -183,7 +183,8 @@ def extract_video(model, clip_ids, split, args, device, use_bf16):
 
 def extract_text(model, tokenizer, records, split, args, device, use_bf16):
     out_path = args.output_root / f'text_embeddings_{split}.pkl'
-    if out_path.exists():
+    merge_existing = getattr(args, 'merge_existing', False)
+    if out_path.exists() and not merge_existing:
         print(f'[text] {out_path.name} exists, skipping')
         return
 
@@ -194,13 +195,26 @@ def extract_text(model, tokenizer, records, split, args, device, use_bf16):
         keys.append(f'{vid}_{idx}')
         captions.append(cap)
 
+    if merge_existing and out_path.exists():
+        with open(out_path, 'rb') as f:
+            features = pickle.load(f)
+        print(f'[text/merge] seeded with {len(features)} existing entries from {out_path.name}')
+    else:
+        features = {}
+    todo_pairs = [(k, c) for k, c in zip(keys, captions) if k not in features]
+    if not todo_pairs:
+        print(f'[text] all {len(features)} keys already present, nothing to do')
+        return
+    todo_keys = [p[0] for p in todo_pairs]
+    todo_captions = [p[1] for p in todo_pairs]
+    print(f'[text] split={split} todo={len(todo_keys)} done={len(features)}')
+
     cast_dtype = torch.bfloat16 if use_bf16 else torch.float16
-    features = {}
     model.eval()
     with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=cast_dtype):
-        for i in tqdm(range(0, len(captions), args.text_batch_size), desc=f'text/{split}'):
-            batch = captions[i:i + args.text_batch_size]
-            batch_keys = keys[i:i + args.text_batch_size]
+        for i in tqdm(range(0, len(todo_captions), args.text_batch_size), desc=f'text/{split}'):
+            batch = todo_captions[i:i + args.text_batch_size]
+            batch_keys = todo_keys[i:i + args.text_batch_size]
             inputs = tokenizer(
                 batch,
                 padding='max_length',
@@ -230,6 +244,10 @@ def main():
     parser.add_argument('--frames-root', type=Path, default=PANDA_FRAMES_ROOT)
     parser.add_argument('--annotation-root', type=Path, default=PANDA_ANNO_ROOT)
     parser.add_argument('--output-root', type=Path, default=OUTPUT_ROOT)
+    parser.add_argument('--merge-existing', dest='merge_existing', action='store_true',
+                        help='Text path: load existing pkl as seed, only compute missing keys, write merged pkl')
+    parser.add_argument('--include-keys-file', type=Path, default=None,
+                        help='Optional text file (one clip_id per line). If set, video and text paths process only listed clip_ids.')
     args = parser.parse_args()
     args.frames_root = args.frames_root.resolve()
     args.annotation_root = args.annotation_root.resolve()
@@ -248,6 +266,10 @@ def main():
     model, tokenizer = load_model_and_tokenizer(config, args.checkpoint, device)
 
     records = load_records(args.split, args.annotation_root)
+    if args.include_keys_file is not None:
+        keep = {ln.strip() for ln in args.include_keys_file.read_text().splitlines() if ln.strip()}
+        records = [r for r in records if r[0] in keep]
+        print(f'[data] include-keys-file filter: kept {len(records)} records intersecting {len(keep)} clip_ids')
     clip_ids = list(dict.fromkeys(r[0] for r in records))
     print(f'[data] split={args.split} captions={len(records)} unique_clips={len(clip_ids)}')
 

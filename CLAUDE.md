@@ -39,14 +39,17 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 
 ## Research Workflow
 
+`WORKFLOW.md` at the repo root is the operating protocol for any `@WORKFLOW.md` invocation and overrides general harness defaults (e.g., "do not spawn agents unless asked", end-of-turn-summary style). Strictly follow it: when it says dispatch a subagent, dispatch; when it says emit a 10-minute status line, emit it; when it says schedule re-entry, schedule.
+
 Before proposing or extending any new research idea, run a self-review first.
 - Check the problem anchor and the exact bottleneck being solved
 - Critically review the idea for weak assumptions, overclaimed conclusions, and likely reviewer attacks
 - Run a novelty check before turning the idea into an experiment or paper claim
-- For Review Loop workflows, do not save the loop transcript or full round-by-round review as a standalone doc. Distill only the actionable conclusions into `PLAN.md`, and record the important review judgments, concerns, and resolutions in `TRACKER.md`.
+- For Review Loop workflows, do not save the loop transcript or full round-by-round review as a standalone doc. Distill only the actionable conclusions into `plan.html`, and record the important review judgments, concerns, and resolutions in `tracker.html`.
 - For future experiments, do not include an A0/checkpoint reproduction run such as `V0: A0 reproduction` by default. Assume the current checkpoint and recorded performance in `AGENTS.md` are correct unless the user explicitly asks to revalidate the anchor or there is direct evidence of code/path drift.
 - For inference/export changes, minimize per-query latency while preserving metric correctness. Reuse online generation outputs and offline caches where possible; do not add per-candidate T5 teacher-forcing or direct video-ANN search to the default inference path unless explicitly approved as an offline diagnostic.
 - In research plans, call the ordered run/ablation section `Experiments List`, not `Decision Tree`.
+- Do not pre-estimate run duration. `plan.html` rows, launcher manifests, allocation rows, and live-check rows record `est_time=unknown` until the run has executed at least 30 minutes of stable throughput; after that, derive ETA from observed throughput and update on every 10-minute report.
 
 ## Refinement Guardrails
 
@@ -72,7 +75,7 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 ## Research Output Contract
 
 - The only valid in-repo location for new research material is `research/active/<YYYY-MM-DD>-<slug>/`.
-- Every research package must contain `README.md`, `PLAN.md`, `TRACKER.md`, `RESULTS.md`, plus `docs/` and `scripts/`.
+- Every research package must contain `README.md`, `plan.html`, `tracker.html`, `results.html`, plus `docs/` and `scripts/`.
 - Use `bash scripts/dev/new_research.sh <slug>` to create research packages; do not create ad hoc top-level research folders outside `research/`.
 - Runtime state, supervisor JSON, local logs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
 - When a research theme is complete or paused, move the whole package to `research/archive/<YYYY-MM-DD>-<slug>/`.
@@ -82,55 +85,25 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 
 - Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.
 - Prefer named `tmux` sessions/windows and report the attach command so the run can be monitored live.
+- Enforce the Fact Propagation Contract on every per-turn live cycle: between the tracker live-check update and the §5 status line, run `python research_html/packages/<pkg-id>/scripts/propagate_facts.py`; for each event listed in the report, update its owning surfaces (`results.html`, `next-action.html`, `research_html/data/research-packages.js`, tracker Resume Block) in the same turn, then advance the cursor with `propagate_facts.py --bump`. A non-empty report at the Stop Gate is a workflow violation.
 
 ## Current Best
 
-Version: `Version1.0`
+Last updated: 2026-05-11
 
-Last updated: 2026-04-30
+### MSR-VTT
+- Variant: `fit_bucket_l010_g10_k20_s42` (seed 42)
+- Ckpt: `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
+- Setting 1 (beam 100, avg 130.73): CanHit@20/50/100/all = 52.8 / 74.5 / 86.5 / 91.0; XPool R@1/5/10 = 45.7 / 69.8 / 78.9
+- Setting 2 (beam 15, avg 300.41): CanHit@20/50/100/all = 4.6 / 15.0 / 32.0 / 64.3; XPool R@1/5/10 = 17.4 / 32.2 / 40.6
+- Setting 2 compact budget gate: `avg_candidates_per_query <= 310`; rows above are not comparable compact champions.
 
-- Variant: `fit_bucket_l010_g10_k20_s42`
-- Seed: `42`
-- Default training config:
-  - `model_name=t5-small`, `dataset=msrvtt`, `code_num=128`, `max_length=3`, `num_latent_tokens=4`
-  - `batch_size=512`, `eval_batch_size=32`, `num_candidates=20`
-  - `w2_route_agree_loss=0`, `w3_bucket_route_loss=0.10`, `route_agree_stopgrad_video=True`
-  - `save_path=output/GRDR/bucket_candidate_k20`
-- Checkpoint:
-  `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
-- Resolved checkpoint path:
-  `/data2/uqzzha35/semantic_id/output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
-
-Current best Stage 1 candidates:
-- Setting 1 selected beam: `100`
-  - avg_candidates_per_query: `130.73`
-  - CanHit@20/50/100/all: `52.8 / 74.5 / 86.5 / 91.0`
-  - candidate file:
-    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t1_beam100.json`
-- Setting 2 selected beam: `15`
-  - avg_candidates_per_query: `300.41`
-  - CanHit@20/50/100/all: `4.6 / 15.0 / 32.0 / 64.3`
-  - candidate file:
-    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t2_beam15.json`
-
-Current best Stage 2 results:
-- Setting 1, beam 100:
-  - XPool R@1/R@5/R@10: `45.7 / 69.8 / 78.9`
-  - result file:
-    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t1_beam100_candidates.csv`
-- Setting 2, beam 15:
-  - XPool R@1/R@5/R@10: `17.4 / 32.2 / 40.6`
-  - result file:
-    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t2_beam15_candidates.csv`
-
-Summary artifact:
-- `var/research/2026-04-28-best-ckpt-full-eval/results/summary_manual.tsv`
-
-README MSR-VTT comparison:
-- Setting 1 improves R@10 over README (`78.9` vs `78.0`) but is lower on R@1/R@5.
-- Setting 2 matches README R@1/R@5 and improves R@10 (`40.6` vs `39.7`).
-
-Treat this as the current best until a new run improves the matched setting under the strict compact budget gate. For MSR-VTT Setting 2, rows above `avg_candidates_per_query=310` are not comparable compact champions even if full-candidate X-Pool improves.
+### Panda (Setting 1 only)
+- Variant: `panda_s1_p4_rq03_c512l3_s42` (P6 3-seed confirmed; seed 42 ckpt)
+- Ckpt: `var/research/2026-05-05-panda-setting1-full-run/output/GRDR/panda_setting1_p4/panda/20260509164015-panda_s1_p4_rq03_c512l3_s42/model-3-fit/best_model.pt`
+- Setting 1 seed 42 (beam 100, avg 125.95): CanHit@20/50/100/all = 75.54 / 86.95 / 92.80 / 94.01
+- Setting 1 3-seed mean (42/220/3407, beam 100, avg 127.15): CanHit@100 = 92.42 ± 0.38; FullSetHit@All = 93.83
+- Setting 2: not run.
 
 ## graphify
 

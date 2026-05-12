@@ -11,6 +11,7 @@ from config.all_config import AllConfig
 from datasets.data_factory import DataFactory
 from model.model_factory import ModelFactory
 from trainer.evaluator import PerQueryEvaluator
+from utils.checkpoint import load_state_dict_compat
 import argparse
 
 
@@ -244,8 +245,7 @@ def main():
     # Load checkpoint
     if os.path.exists(custom_args.checkpoint):
         print(f"Loading checkpoint: {custom_args.checkpoint}")
-        checkpoint = torch.load(custom_args.checkpoint)
-        model.load_state_dict(checkpoint['state_dict'])
+        load_state_dict_compat(model, custom_args.checkpoint)
     else:
         print(f"Warning: Checkpoint not found: {custom_args.checkpoint}")
 

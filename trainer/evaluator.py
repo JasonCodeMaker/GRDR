@@ -918,6 +918,13 @@ def test(config):
         print("Generating semantic IDs for train set...")
         raw_train_codes = model.gen_sid(train_data_loader)
 
+        distractor_n = int(config.get('distractor_n', 0) or 0)
+        if distractor_n > 0 and len(raw_train_codes) > distractor_n:
+            import random as _random
+            sampled_keys = set(_random.Random(42).sample(sorted(raw_train_codes), distractor_n))
+            raw_train_codes = {k: raw_train_codes[k] for k in raw_train_codes if k in sampled_keys}
+            print(f"Distractor sub-sample: kept {len(raw_train_codes)} / {distractor_n} requested train videos (seed=42)")
+
         train_sample_codes_dict = {}
         for video_id, codes in raw_train_codes.items():
             parts = video_id.rsplit('_', 1)

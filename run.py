@@ -115,6 +115,8 @@ def parse_args():
                        help='Batch size for retrieval evaluation; defaults to training batch size')
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                        help='Setting: 1=test only pool, 2=train+test combined pool')
+    parser.add_argument('--distractor_n', type=int, default=0,
+                       help='Setting 2 only: if >0, deterministically subsample N train videos (seed fixed=42) before merging with test; 0 = use full train pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
     parser.add_argument('--inference_reorder_by_access_score', action='store_true', default=False,

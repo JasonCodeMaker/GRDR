@@ -161,7 +161,7 @@ The search pool contains both training and test videos, reflecting real-world de
 
 | Dataset | R@1 | R@5 | R@10 | Latency (ms) |
 |---------|-----|-----|------|--------------|
-| MSR-VTT | 17.4 | 32.2 | 39.7 | 184 |
+| MSR-VTT | 19.2 | 35.9 | 44.8 | 278 |
 | ActivityNet | 19.2 | 41.1 | 51.8 | 116 |
 | DiDeMo | 15.5 | 29.7 | 36.1 | 119 |
 | LSMDC | 2.1 | 4.8 | 5.9 | 121 |

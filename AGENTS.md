@@ -85,52 +85,21 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 
 ## Current Best
 
-Version: `Version1.0`
+Last updated: 2026-05-11
 
-Last updated: 2026-04-30
+### MSR-VTT
+- Variant: `fit_bucket_l010_g10_k20_s42` (seed 42)
+- Ckpt: `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
+- Setting 1 (beam 100, avg 130.73): CanHit@20/50/100/all = 52.8 / 74.5 / 86.5 / 91.0; XPool R@1/5/10 = 45.7 / 69.8 / 78.9
+- Setting 2 (beam 15, avg 300.41): CanHit@20/50/100/all = 4.6 / 15.0 / 32.0 / 64.3; XPool R@1/5/10 = 17.4 / 32.2 / 40.6
+- Setting 2 compact budget gate: `avg_candidates_per_query <= 310`; rows above are not comparable compact champions.
 
-- Variant: `fit_bucket_l010_g10_k20_s42`
-- Seed: `42`
-- Default training config:
-  - `model_name=t5-small`, `dataset=msrvtt`, `code_num=128`, `max_length=3`, `num_latent_tokens=4`
-  - `batch_size=512`, `eval_batch_size=32`, `num_candidates=20`
-  - `w2_route_agree_loss=0`, `w3_bucket_route_loss=0.10`, `route_agree_stopgrad_video=True`
-  - `save_path=output/GRDR/bucket_candidate_k20`
-- Checkpoint:
-  `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
-- Resolved checkpoint path:
-  `/data2/uqzzha35/semantic_id/output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
-
-Current best Stage 1 candidates:
-- Setting 1 selected beam: `100`
-  - avg_candidates_per_query: `130.73`
-  - CanHit@20/50/100/all: `52.8 / 74.5 / 86.5 / 91.0`
-  - candidate file:
-    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t1_beam100.json`
-- Setting 2 selected beam: `15`
-  - avg_candidates_per_query: `300.41`
-  - CanHit@20/50/100/all: `4.6 / 15.0 / 32.0 / 64.3`
-  - candidate file:
-    `var/research/2026-04-28-best-ckpt-full-eval/candidates/best_s42_t2_beam15.json`
-
-Current best Stage 2 results:
-- Setting 1, beam 100:
-  - XPool R@1/R@5/R@10: `45.7 / 69.8 / 78.9`
-  - result file:
-    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t1_beam100_candidates.csv`
-- Setting 2, beam 15:
-  - XPool R@1/R@5/R@10: `17.4 / 32.2 / 40.6`
-  - result file:
-    `var/research/2026-04-28-best-ckpt-full-eval/results/best_s42_t2_beam15_candidates.csv`
-
-Summary artifact:
-- `var/research/2026-04-28-best-ckpt-full-eval/results/summary_manual.tsv`
-
-README MSR-VTT comparison:
-- Setting 1 improves R@10 over README (`78.9` vs `78.0`) but is lower on R@1/R@5.
-- Setting 2 matches README R@1/R@5 and improves R@10 (`40.6` vs `39.7`).
-
-Treat this as the current best until a new run improves the matched setting under the strict compact budget gate. For MSR-VTT Setting 2, rows above `avg_candidates_per_query=310` are not comparable compact champions even if full-candidate X-Pool improves.
+### Panda (Setting 1 only)
+- Variant: `panda_s1_p4_rq03_c512l3_s42` (P6 3-seed confirmed; seed 42 ckpt)
+- Ckpt: `var/research/2026-05-05-panda-setting1-full-run/output/GRDR/panda_setting1_p4/panda/20260509164015-panda_s1_p4_rq03_c512l3_s42/model-3-fit/best_model.pt`
+- Setting 1 seed 42 (beam 100, avg 125.95): CanHit@20/50/100/all = 75.54 / 86.95 / 92.80 / 94.01
+- Setting 1 3-seed mean (42/220/3407, beam 100, avg 127.15): CanHit@100 = 92.42 ± 0.38; FullSetHit@All = 93.83
+- Setting 2: not run.
 
 ## graphify
 

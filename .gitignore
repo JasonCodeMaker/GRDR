@@ -39,3 +39,4 @@ __pycache__/
 /research/active/*
 /research/active/**/__pycache__/
 /research/active/**/*.py[cod]
+/research_html

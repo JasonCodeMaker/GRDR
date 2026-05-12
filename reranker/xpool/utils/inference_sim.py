@@ -656,11 +656,8 @@ def main():
     # Load checkpoint
     if os.path.exists(args.checkpoint):
         print(f"Loading checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
-        if 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
+        from utils.checkpoint import load_state_dict_compat
+        load_state_dict_compat(model, args.checkpoint)
     else:
         print(f"Warning: Checkpoint not found: {args.checkpoint}")
         print("Using randomly initialized model")

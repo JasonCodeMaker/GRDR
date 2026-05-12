@@ -23,6 +23,7 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
+from utils.checkpoint import load_state_dict_compat
 
 
 def get_unique_video_ids(config, split_type='test'):
@@ -273,9 +274,7 @@ def main():
     if args.checkpoint:
         if os.path.exists(args.checkpoint):
             print(f"Loading checkpoint: {args.checkpoint}")
-            checkpoint = torch.load(args.checkpoint, map_location='cpu')
-            state_dict = checkpoint.get('state_dict', checkpoint)
-            model.load_state_dict(state_dict)
+            load_state_dict_compat(model, args.checkpoint)
         else:
             print(f"Warning: Checkpoint not found at {args.checkpoint}")
 
