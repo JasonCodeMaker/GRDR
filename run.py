@@ -129,6 +129,21 @@ def parse_args():
                        help='Directory for exported candidate JSON')
     parser.add_argument('--candidate_sidecar_dir', type=str, default=None,
                        help='Optional directory for per-query candidate audit JSONL sidecars')
+    # Pass-B (efficiency) latency contract --- see
+    # research_html/packages/2026-05-15-panda-baselines/docs/eval-efficiency.html
+    parser.add_argument('--candidate_export', action='store_true', default=False,
+                       help='Pass-B Stage-1 entry: run candidate export only (equivalent to --eval with latency-mode setup)')
+    parser.add_argument('--subset_manifest', type=str, default=None,
+                       help='Pass-B latency manifest; restricts queries to listed video_ids')
+    parser.add_argument('--warmup_n_used', type=int, default=10,
+                       help='Manifest warmup ids consumed before timing starts')
+    parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
+                       help='Per-cell wall-time cap; stops between queries when exceeded')
+    parser.add_argument('--latency_helpers_dir', type=str,
+                       default='/home/uqzzha35/Project/SemanticID/GRDR/research_html/packages/2026-05-15-panda-baselines/scripts',
+                       help='Directory containing latency_helpers.py')
+    parser.add_argument('--output_json', type=str, default=None,
+                       help='Pass-B explicit output path for the candidate JSON (overrides --candidate_output_dir)')
 
     parser.add_argument('--save_path', type=str, default='output/GRDR/bucket_candidate_k20')
     parser.add_argument('--exp_name', type=str, default='fit_bucket_l010_g10_k20_s42', help='Experiment name for wandb and save path')
@@ -137,6 +152,10 @@ def parse_args():
                        help='GPU device ID to use for training (0 or 1)')
     parser.add_argument('--use_pseudo_queries', action='store_true', default=False,
                        help='Include pseudo queries in training data')
+    parser.add_argument('--start_loop', type=int, default=0,
+                       help='Resume progressive training from this loop index (0-based). Use with --init_checkpoint to extend an existing l=start_loop ckpt with the next code layer.')
+    parser.add_argument('--init_checkpoint', type=str, default=None,
+                       help='Initial checkpoint when --start_loop > 0; must be the model-{start_loop}-fit/best_model.pt of a prior run with the same codebook width.')
 
     args = parser.parse_args()
 
@@ -156,7 +175,7 @@ def main():
     seed_everything(args.seed)
     config = copy.deepcopy(vars(args))
 
-    if args.eval:
+    if args.eval or args.candidate_export:
         config['eval_checkpoint'] = args.eval_checkpoint
         test(config)
     else:
@@ -168,10 +187,12 @@ def main():
         project_name = f"{config['dataset']}_GRDR"
         wandb.init(project=project_name, name=args.exp_name or None, config=config)
 
-        checkpoint = None
+        checkpoint = args.init_checkpoint
         global_step = 0
+        if args.start_loop > 0 and checkpoint is None:
+            raise ValueError(f'--start_loop={args.start_loop} requires --init_checkpoint')
 
-        for loop in range(args.max_length):
+        for loop in range(args.start_loop, args.max_length):
             # Phase 1: Pre-train
             config['loop'] = loop
             config['save_path'] = os.path.join(save_root, f'model-{loop + 1}-pre')

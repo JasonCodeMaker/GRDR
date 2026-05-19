@@ -72,6 +72,19 @@ def parse_args():
                              'per-query timings in JSON metadata.')
     parser.add_argument('--num_warmup', type=int, default=0,
                         help='Warmup queries for --per_query_timing')
+    # Pass-B (efficiency) latency contract --- see GRDR research_html package
+    # 2026-05-15-panda-baselines/docs/eval-efficiency.html
+    parser.add_argument('--subset_manifest', type=str, default=None,
+                        help='Pass-B latency manifest; overrides --query_manifest')
+    parser.add_argument('--warmup_n_used', type=int, default=10,
+                        help='Manifest warmup ids to consume; overrides --num_warmup when --subset_manifest is set')
+    parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
+                        help='Per-cell wall-time cap; stops between queries when exceeded')
+    parser.add_argument('--latency_helpers_dir', type=str,
+                        default='/home/uqzzha35/Project/SemanticID/GRDR/research_html/packages/2026-05-15-panda-baselines/scripts',
+                        help='Directory containing latency_helpers.py')
+    parser.add_argument('--output_json', type=str, default=None,
+                        help='Optional override path for the Pass-B candidate JSON output')
     return parser.parse_args()
 
 
@@ -622,7 +635,15 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
 
     print(f"  Per-query timing: {n} queries "
           f"(batch=1 encode + disk video loads + batch=1 search)")
+    # Pass-B wall-time cap (between queries).
+    wall_cap_s = float(getattr(args, 'wall_time_cap_s', 1e18))
+    cap_t0 = time.perf_counter()
+    cap_hit = False
+    n_processed = 0
     for i in tqdm(range(n), desc="Per-query"):
+        if (time.perf_counter() - cap_t0) >= wall_cap_s:
+            cap_hit = True
+            break
         t_total = time.perf_counter()
         emb, t_enc = encode_text_per_query(captions[i], model, tokenizer, device)
         vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
@@ -646,6 +667,7 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
             'visited_nodes': search_stats.get('visited_nodes', 0),
             'disk_reads': vector_store.disk_reads,
         })
+        n_processed += 1
 
     ranks = np.full(n, k + 1, dtype=np.float64)
     for i in range(n):
@@ -680,6 +702,11 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
     metrics['online_time_total_s'] = float(total_arr.sum())
     metrics['queries_per_sec'] = float(n / max(total_arr.sum(), 1e-9))
     metrics['structure_load_time_s'] = float(structure_load_s)
+    # Pass-B cap state piggy-backed on metrics dict.
+    metrics['pass_b_n_processed'] = int(n_processed)
+    metrics['pass_b_n_target'] = int(n)
+    metrics['pass_b_cap_hit'] = bool(cap_hit)
+    metrics['pass_b_wall_seconds'] = float(time.perf_counter() - cap_t0)
     return metrics, retrieved, distances, timings
 
 
@@ -716,31 +743,62 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
                 if r['ground_truth_video_id'] in r['candidates'])
     recall_at_k = gt_in / len(results) if results else 0
     metadata = {
+        'method': f'ann_{idx_type}',
         'dataset': args.dataset,
         'setting': args.setting,
         'index_type': idx_type,
         'num_candidates': num_candidates,
         'pool_size': len(pool_ids),
-        'method': 'ann_dense_retrieval',
         'per_query_timing': per_query_timings is not None,
     }
     if per_query_timings is not None:
+        # Contract-shape latency block.
+        n_processed = int(metrics.get('pass_b_n_processed', len(per_query_timings)))
+        n_target = int(metrics.get('pass_b_n_target', len(per_query_timings)))
+        cap_hit = bool(metrics.get('pass_b_cap_hit', False))
+        validity = 'full_subset' if (n_processed >= n_target and not cap_hit) else 'truncated_subset'
+        # p95 from per-query totals.
+        try:
+            arr_ms = np.asarray([1000.0 * t['total_s'] for t in per_query_timings], dtype=np.float64)
+            p95 = float(np.percentile(arr_ms, 95)) if arr_ms.size else 0.0
+        except Exception:
+            p95 = 0.0
         metadata['stage1_latency_ms'] = {
-            'text_encode_mean': metrics.get('encode_time_per_query_ms_mean'),
-            'text_encode_std': metrics.get('encode_time_per_query_ms_std'),
-            'index_load_mean': metrics.get('index_load_time_per_query_ms_mean'),
-            'index_load_std': metrics.get('index_load_time_per_query_ms_std'),
-            'video_load_mean': metrics.get('video_load_time_per_query_ms_mean'),
-            'video_load_std': metrics.get('video_load_time_per_query_ms_std'),
-            'video_pool_mean': metrics.get('video_pool_time_per_query_ms_mean'),
-            'video_pool_std': metrics.get('video_pool_time_per_query_ms_std'),
-            'similarity_mean': metrics.get('similarity_time_per_query_ms_mean'),
-            'similarity_std': metrics.get('similarity_time_per_query_ms_std'),
-            'search_mean': metrics.get('search_time_per_query_ms_mean'),
-            'search_std': metrics.get('search_time_per_query_ms_std'),
             'online_total_mean': metrics.get('online_time_per_query_ms_mean'),
+            'online_total_p95': p95,
             'online_total_std': metrics.get('online_time_per_query_ms_std'),
+            'component_breakdown_mean_ms': {
+                'text_encode': metrics.get('encode_time_per_query_ms_mean'),
+                'index_load': metrics.get('index_load_time_per_query_ms_mean'),
+                'video_load': metrics.get('video_load_time_per_query_ms_mean'),
+                'video_pool': metrics.get('video_pool_time_per_query_ms_mean'),
+                'similarity': metrics.get('similarity_time_per_query_ms_mean'),
+                'search': metrics.get('search_time_per_query_ms_mean'),
+            },
+            'n_processed': n_processed,
+            'n_target': n_target,
+            'warmup_n': int(getattr(args, 'warmup_n_used', args.num_warmup)),
+            'warmup_n_used': int(getattr(args, 'warmup_n_used', args.num_warmup)),
+            'validity': validity,
+            'wall_seconds': float(metrics.get('pass_b_wall_seconds', 0.0)),
+            'cap_hit': cap_hit,
+            'strict_latency_contract': 'ann_per_query_cpu_perf_counter',
+            'latency_batch_size': 1,
         }
+    # Pass-B provenance fields at metadata top level.
+    if getattr(args, 'subset_manifest', None):
+        try:
+            import sys as _sys
+            _sys.path.insert(0, args.latency_helpers_dir)
+            from latency_helpers import load_subset_manifest as _lsm, host_fingerprint as _hfp  # noqa: E402
+            _m = _lsm(args.subset_manifest)
+            metadata['subset_manifest'] = args.subset_manifest
+            metadata['subset_manifest_sha256'] = _m['metadata'].get('content_sha256', '')
+            metadata['host_fingerprint'] = _hfp()
+        except Exception:
+            metadata['subset_manifest'] = args.subset_manifest
+            metadata['subset_manifest_sha256'] = ''
+            metadata['host_fingerprint'] = {}
     output = {
         'metadata': metadata,
         'metrics': {
@@ -778,7 +836,37 @@ def main():
     print(f"{'='*70}\n")
 
     # 1. Load test queries (raw IDs).
-    if args.query_manifest:
+    # Pass-B latency mode: if --subset_manifest is provided, build (warmup + timed)
+    # ordered captions list and force per_query_timing on with num_warmup = warmup_n_used.
+    pass_b_manifest = None
+    if args.subset_manifest:
+        import sys as _sys
+        _sys.path.insert(0, args.latency_helpers_dir)
+        from latency_helpers import load_subset_manifest as _load_sm  # noqa: E402
+        pass_b_manifest = _load_sm(args.subset_manifest)
+        full_pairs = load_test_queries(args.dataset)
+        by_vid = {}
+        dup = {}
+        for vid, cap in full_pairs:
+            dup[vid] = dup.get(vid, 0) + 1
+            key = vid if dup[vid] == 1 else f"{vid}#dup{dup[vid]}"
+            by_vid[key] = (vid, cap)
+        warmup_ids = pass_b_manifest['warmup_query_ids'][: args.warmup_n_used]
+        timed_ids = pass_b_manifest['timed_query_ids']
+        warmup_pairs = [by_vid[q] for q in warmup_ids if q in by_vid]
+        timed_pairs = [by_vid[q] for q in timed_ids if q in by_vid]
+        missing_w = [q for q in warmup_ids if q not in by_vid]
+        missing_t = [q for q in timed_ids if q not in by_vid]
+        if missing_w or missing_t:
+            print(f"Pass-B WARN: manifest qids missing from ANN loader — "
+                  f"warmup={len(missing_w)} timed={len(missing_t)}")
+        test_pairs = warmup_pairs + timed_pairs
+        args.num_warmup = len(warmup_pairs)
+        args.per_query_timing = True
+        args.batch_size = 1
+        print(f"Pass-B ANN subset: warmup={args.num_warmup} timed={len(timed_pairs)}"
+              f" (manifest sha={pass_b_manifest['metadata'].get('content_sha256','')[:10]})")
+    elif args.query_manifest:
         test_pairs = load_query_manifest(args.query_manifest)
         print(f"Loaded query manifest: {args.query_manifest}")
     else:
@@ -914,10 +1002,13 @@ def main():
                   f"Build: {build_time:.2f}s, "
                   f"Structure load: {metrics['structure_load_time_s']:.4f}s")
 
-        cand_filename = (f"{args.dataset}_ann_{idx_type}"
-                         f"_{args.num_candidates}_candidates"
-                         f"_t{args.setting}.json")
-        cand_path = os.path.join(args.candidate_dir, cand_filename)
+        if args.output_json and args.index_type != 'all':
+            cand_path = args.output_json
+        else:
+            cand_filename = (f"{args.dataset}_ann_{idx_type}"
+                             f"_{args.num_candidates}_candidates"
+                             f"_t{args.setting}.json")
+            cand_path = os.path.join(args.candidate_dir, cand_filename)
         save_candidate_json(retrieved, distances, test_captions, gt_vids,
                             saved_pool_ids, args.num_candidates, metrics, args,
                             idx_type, cand_path,

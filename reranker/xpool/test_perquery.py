@@ -192,6 +192,17 @@ def main():
                         help='Optional path for structured summary JSON')
     custom_parser.add_argument('--index_safe_candidates', action='store_true',
                         help='Use candidate file row index instead of query text when selecting per-query candidates')
+    # Pass-B (efficiency) latency contract --- see
+    # research_html/packages/2026-05-15-panda-baselines/docs/eval-efficiency.html
+    custom_parser.add_argument('--subset_manifest', type=str, default=None,
+                        help='Pass-B latency manifest with warmup_query_ids + timed_query_ids')
+    custom_parser.add_argument('--warmup_n_used', type=int, default=10,
+                        help='How many warmup ids from the manifest to consume (EERCF wrapper overrides to 1)')
+    custom_parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
+                        help='Per-cell wall-time cap; stops between queries when elapsed exceeds this')
+    custom_parser.add_argument('--latency_helpers_dir', type=str,
+                        default='research_html/packages/2026-05-15-panda-baselines/scripts',
+                        help='Path containing latency_helpers.py')
 
     custom_args, _ = custom_parser.parse_known_args()
     if custom_args.cache_dir in ("", "none", "None", "null", "NULL"):
@@ -281,6 +292,34 @@ def main():
         queries = queries[:custom_args.max_queries]
         print(f"Evaluating first {len(queries)} queries (search pool unchanged)")
 
+    # Pass-B latency mode: load subset manifest and split queries into
+    # (warmup, timed) preserving the manifest's qid ordering.
+    latency_manifest = None
+    warmup_queries: list = []
+    if custom_args.subset_manifest:
+        sys.path.insert(0, custom_args.latency_helpers_dir)
+        from latency_helpers import load_subset_manifest  # noqa: E402
+        latency_manifest = load_subset_manifest(custom_args.subset_manifest)
+
+        wanted_warmup = list(latency_manifest['warmup_query_ids'][: custom_args.warmup_n_used])
+        wanted_timed = list(latency_manifest['timed_query_ids'])
+        # qid = video_id; duplicate video_ids in the loader are suffixed #dupN.
+        by_qid: dict = {}
+        dup = {}
+        for t, v in queries:
+            dup[v] = dup.get(v, 0) + 1
+            key = v if dup[v] == 1 else f"{v}#dup{dup[v]}"
+            by_qid[key] = (t, v)
+        warmup_queries = [by_qid[q] for q in wanted_warmup if q in by_qid]
+        queries = [by_qid[q] for q in wanted_timed if q in by_qid]
+        missing_w = [q for q in wanted_warmup if q not in by_qid]
+        missing_t = [q for q in wanted_timed if q not in by_qid]
+        if missing_w or missing_t:
+            print(f"Pass-B WARN: manifest qids missing from X-Pool loader — "
+                  f"warmup={len(missing_w)} timed={len(missing_t)}")
+        print(f"Pass-B subset: warmup={len(warmup_queries)} timed={len(queries)}"
+              f" (manifest sha={latency_manifest['metadata'].get('content_sha256','')[:10]})")
+
     # Define excluded videos per dataset (problematic videos to skip)
     excluded_videos = []
     if config.dataset_name == "LSMDC":
@@ -306,27 +345,73 @@ def main():
 
     per_query_results = []
 
-    for candidate_query_idx, (query_text, video_id_gt) in enumerate(tqdm(queries, desc="Processing queries")):
-        # Evaluate single query
-        result = evaluator.evaluate_query(
-            query_text,
-            video_id_gt,
-            candidate_query_idx=candidate_query_idx if (
-                custom_args.index_safe_candidates and candidates_file
-            ) else None,
-        )
+    # Pass-B latency mode: run warmup queries first (timings discarded by
+    # resetting the evaluator's timing_stats), then time the subset with a
+    # wall-time cap and finally restore the per-query timings.
+    if latency_manifest is not None:
+        import time as _time
+        print(f"Warmup ({len(warmup_queries)} queries) ...")
+        for query_text, video_id_gt in warmup_queries:
+            evaluator.evaluate_query(query_text, video_id_gt, candidate_query_idx=None)
+        for key in evaluator.timing_stats:
+            evaluator.timing_stats[key] = []
+        evaluator.query_count = 0
+        evaluator.query_texts = []
+        evaluator.query_video_ids = []
+        evaluator.query_candidates = {}
+        evaluator.query_similarities = {}
+        per_query_results = []
+        cap_t0 = _time.perf_counter()
+        cap_hit = False
+        for candidate_query_idx, (query_text, video_id_gt) in enumerate(
+            tqdm(queries, desc="Pass-B timed queries")
+        ):
+            if (_time.perf_counter() - cap_t0) >= custom_args.wall_time_cap_s:
+                cap_hit = True
+                break
+            result = evaluator.evaluate_query(
+                query_text,
+                video_id_gt,
+                candidate_query_idx=candidate_query_idx if (
+                    custom_args.index_safe_candidates and candidates_file
+                ) else None,
+            )
+            per_query_results.append({
+                'query_idx': result['query_idx'],
+                'candidate_query_idx': result.get('candidate_query_idx'),
+                'query_text': result['query_text'],
+                'video_id_gt': result['video_id_gt'],
+                'rank': result['rank'],
+                'top_5_videos': result['ranked_videos'][:5],
+                'candidate_count': result.get('candidate_count'),
+                'timing': result['timing'],
+            })
+        latency_wall_seconds = _time.perf_counter() - cap_t0
+        latency_n_processed = len(per_query_results)
+        latency_n_target = len(queries)
+        latency_cap_hit = cap_hit
+    else:
+        for candidate_query_idx, (query_text, video_id_gt) in enumerate(tqdm(queries, desc="Processing queries")):
+            # Evaluate single query
+            result = evaluator.evaluate_query(
+                query_text,
+                video_id_gt,
+                candidate_query_idx=candidate_query_idx if (
+                    custom_args.index_safe_candidates and candidates_file
+                ) else None,
+            )
 
-        # Store detailed results
-        per_query_results.append({
-            'query_idx': result['query_idx'],
-            'candidate_query_idx': result.get('candidate_query_idx'),
-            'query_text': result['query_text'],
-            'video_id_gt': result['video_id_gt'],
-            'rank': result['rank'],
-            'top_5_videos': result['ranked_videos'][:5],
-            'candidate_count': result.get('candidate_count'),
-            'timing': result['timing']
-        })
+            # Store detailed results
+            per_query_results.append({
+                'query_idx': result['query_idx'],
+                'candidate_query_idx': result.get('candidate_query_idx'),
+                'query_text': result['query_text'],
+                'video_id_gt': result['video_id_gt'],
+                'rank': result['rank'],
+                'top_5_videos': result['ranked_videos'][:5],
+                'candidate_count': result.get('candidate_count'),
+                'timing': result['timing']
+            })
 
     print("\n" + "="*70)
     print("Evaluation Complete!")
@@ -393,25 +478,59 @@ def main():
     summary_json_path = custom_args.summary_json or os.path.join(
         report_dir, f"perquery_{config.dataset_name.lower()}_summary.json"
     )
+    summary_payload = {
+        'summary': summary_row,
+        'timing_summary': timing_summary,
+        'metrics': {
+            k: float(v) if isinstance(v, (np.integer, np.floating)) else v
+            for k, v in metrics.items() if k != 'timing_avg'
+        },
+        'config': {
+            'dataset': config.dataset_name,
+            'retrieval_mode': summary_row['retrieval_mode'],
+            'candidate_file': candidates_file,
+            'index_safe_candidates': custom_args.index_safe_candidates,
+            'num_frames': config.num_frames,
+            'cache_dir': custom_args.cache_dir,
+            'videos_dir': config.videos_dir,
+            'search_pool_size': len(evaluator.video_ids),
+        }
+    }
+    if latency_manifest is not None:
+        sys.path.insert(0, custom_args.latency_helpers_dir)
+        from latency_helpers import host_fingerprint  # noqa: E402
+        total_summary = timing_summary.get('total', {})
+        component_means = {
+            k: float(timing_summary.get(k, {}).get('mean_s', 0.0) * 1000.0)
+            for k in ('query_encode', 'video_load', 'frame_pooling', 'similarity_compute')
+        }
+        summary_payload['rerank_latency_ms'] = {
+            'online_total_mean': float(total_summary.get('mean_s', 0.0) * 1000.0),
+            'online_total_p95': float(np.percentile(
+                np.asarray(evaluator.timing_stats['total']) * 1000.0, 95
+            )) if evaluator.timing_stats['total'] else 0.0,
+            'online_total_std': float(total_summary.get('std_s', 0.0) * 1000.0),
+            'component_breakdown_mean_ms': component_means,
+            'n_processed': int(latency_n_processed),
+            'n_target': int(latency_n_target),
+            'warmup_n': len(latency_manifest.get('warmup_query_ids', [])),
+            'warmup_n_used': int(custom_args.warmup_n_used),
+            'validity': 'full_subset' if (
+                latency_n_processed >= latency_n_target and not latency_cap_hit
+            ) else 'truncated_subset',
+            'wall_seconds': float(latency_wall_seconds),
+            'cap_hit': bool(latency_cap_hit),
+            'strict_latency_contract': 'xpool_total_per_query_cuda_sync',
+            'latency_batch_size': 1,
+        }
+        # Pass-B provenance fields at metadata top level (spec).
+        summary_payload['method'] = 'xpool_rerank'
+        summary_payload['setting'] = 2 if getattr(custom_args, 'expanded_pool', False) else 1
+        summary_payload['subset_manifest'] = custom_args.subset_manifest
+        summary_payload['subset_manifest_sha256'] = latency_manifest['metadata'].get('content_sha256', '')
+        summary_payload['host_fingerprint'] = host_fingerprint()
     with open(summary_json_path, 'w') as f:
-        json.dump({
-            'summary': summary_row,
-            'timing_summary': timing_summary,
-            'metrics': {
-                k: float(v) if isinstance(v, (np.integer, np.floating)) else v
-                for k, v in metrics.items() if k != 'timing_avg'
-            },
-            'config': {
-                'dataset': config.dataset_name,
-                'retrieval_mode': summary_row['retrieval_mode'],
-                'candidate_file': candidates_file,
-                'index_safe_candidates': custom_args.index_safe_candidates,
-                'num_frames': config.num_frames,
-                'cache_dir': custom_args.cache_dir,
-                'videos_dir': config.videos_dir,
-                'search_pool_size': len(evaluator.video_ids),
-            }
-        }, f, indent=2)
+        json.dump(summary_payload, f, indent=2)
     print(f"Structured JSON saved to: {summary_json_path}")
 
     # Save detailed per-query results if requested

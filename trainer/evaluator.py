@@ -990,6 +990,22 @@ def test(config):
 
     results = []
     num_candidates = config.get('num_candidates', 20)
+
+    # Pass-B latency mode: branch BEFORE the full-corpus batched generation. The
+    # latency path runs per-query with batch=1, CUDA-synced timer wrapping
+    # tokenize -> generate -> rank_expanded_candidates -> handoff cap; warmup
+    # queries are run first (timings discarded); wall-time cap enforced between
+    # queries; metadata.stage1_latency_ms block written at top of candidate JSON.
+    if config.get('subset_manifest'):
+        _run_pass_b_latency(
+            config=config, model=model, dataset=dataset, tokenizer=tokenizer,
+            sid_to_videos=sid_to_videos, tree=tree, code_length=code_length,
+            num_candidates=num_candidates, handoff_cap=handoff_cap,
+            use_access_reorder=use_access_reorder,
+            access_bucket_gamma=access_bucket_gamma,
+        )
+        return
+
     generation_start_time = time.time()
 
     tk0 = tqdm(data_loader, total=len(data_loader))
@@ -1125,13 +1141,186 @@ def test(config):
         save_candidate_sidecar_jsonl(results, gt_video_ids, config, sidecar_dir, timestamp)
 
 
+def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
+                        code_length, num_candidates, handoff_cap,
+                        use_access_reorder, access_bucket_gamma):
+    """Pass-B per-query latency export for GRDR Stage-1.
+
+    Loads the subset manifest, reorders dataset.samples to (warmup + timed),
+    runs each query with batch=1 + CUDA-synced timer wrapping
+    tokenize -> generate -> rank_expanded_candidates -> handoff cap, enforces
+    a between-query wall-time cap, and writes a candidate JSON with
+    metadata.stage1_latency_ms + top-level provenance fields.
+
+    See research_html/packages/2026-05-15-panda-baselines/docs/eval-efficiency.html.
+    """
+    import sys as _sys
+    helpers_dir = config.get(
+        'latency_helpers_dir',
+        '/home/uqzzha35/Project/SemanticID/GRDR/research_html/packages/2026-05-15-panda-baselines/scripts',
+    )
+    _sys.path.insert(0, helpers_dir)
+    from latency_helpers import load_subset_manifest, host_fingerprint  # noqa: E402
+
+    manifest = load_subset_manifest(config['subset_manifest'])
+    warmup_n_used = int(config.get('warmup_n_used', 10))
+    wall_cap_s = float(config.get('wall_time_cap_s', 300.0))
+    warmup_ids = list(manifest['warmup_query_ids'][:warmup_n_used])
+    timed_ids = list(manifest['timed_query_ids'])
+
+    by_vid = {}
+    dup = {}
+    for s in dataset.samples:
+        v = strip_video_suffix(s['video_id'])
+        dup[v] = dup.get(v, 0) + 1
+        key = v if dup[v] == 1 else f"{v}#dup{dup[v]}"
+        by_vid[key] = s
+    warmup_samples = [by_vid[q] for q in warmup_ids if q in by_vid]
+    timed_samples = [by_vid[q] for q in timed_ids if q in by_vid]
+    missing_w = [q for q in warmup_ids if q not in by_vid]
+    missing_t = [q for q in timed_ids if q not in by_vid]
+    if missing_w or missing_t:
+        print(f"Pass-B WARN: GRDR manifest qids missing — "
+              f"warmup={len(missing_w)} timed={len(missing_t)}")
+    n_warmup = len(warmup_samples)
+    n_target = len(timed_samples)
+    print(f"Pass-B GRDR subset: warmup={n_warmup} timed={n_target}"
+          f" (manifest sha={manifest['metadata'].get('content_sha256','')[:10]})")
+
+    model.eval()
+    device = next(model.parameters()).device
+    results = []
+    per_query_ms = []
+    cap_hit = False
+    cap_t0 = None
+
+    ordered_samples = warmup_samples + timed_samples
+    with torch.no_grad():
+        for i, sample in enumerate(ordered_samples):
+            in_warmup = i < n_warmup
+            # Start the timed window AFTER the warmup section finishes.
+            if (not in_warmup) and cap_t0 is None:
+                cap_t0 = time.perf_counter()
+            if (not in_warmup) and cap_t0 is not None and (
+                time.perf_counter() - cap_t0
+            ) >= wall_cap_s:
+                cap_hit = True
+                break
+
+            # CUDA-synced per-query timer wraps the full Stage-1 path.
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _t0 = time.perf_counter()
+
+            caption = sample['caption']
+            tok = tokenizer(caption, return_tensors='pt', padding=True,
+                            truncation=True, max_length=128)
+            input_ids = tok['input_ids'].to(device)
+            attention_mask = tok['attention_mask'].to(device)
+            gen_output = model.generate(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                max_length=code_length + 1,
+                num_beams=num_candidates,
+                num_return_sequences=num_candidates,
+                prefix_allowed_tokens_fn=tree,
+                return_dict_in_generate=True,
+                output_scores=True,
+            )
+            beams = [seq.cpu().tolist() for seq in gen_output.sequences]
+            beam_scores = (
+                gen_output.sequences_scores.cpu().tolist()
+                if getattr(gen_output, 'sequences_scores', None) is not None
+                else [0.0] * len(beams)
+            )
+            sid_list, ranked_videos, ranked_videos_with_sid, ranked_scores = rank_expanded_candidates(
+                beams, beam_scores, sid_to_videos,
+                use_access_score=use_access_reorder,
+                bucket_gamma=access_bucket_gamma,
+            )
+            if handoff_cap > 0:
+                ranked_videos = ranked_videos[:handoff_cap]
+                ranked_videos_with_sid = ranked_videos_with_sid[:handoff_cap]
+                ranked_scores = ranked_scores[:handoff_cap]
+
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _t1 = time.perf_counter()
+            if not in_warmup:
+                per_query_ms.append((_t1 - _t0) * 1000.0)
+                cleaned_gt = strip_video_suffix(sample['video_id'])
+                results.append({
+                    'query_idx': len(results),
+                    'query_text': caption,
+                    'ground_truth_video_id': cleaned_gt,
+                    'candidates': ranked_videos,
+                    'scores': ranked_scores,
+                    'num_candidates': len(ranked_videos),
+                })
+
+    import numpy as _np
+    n_processed = len(per_query_ms)
+    wall_seconds = (time.perf_counter() - cap_t0) if cap_t0 is not None else 0.0
+    arr = _np.asarray(per_query_ms, dtype=_np.float64) if per_query_ms else _np.zeros(1)
+    metadata = {
+        'method': 'grdr',
+        'dataset': config.get('dataset', ''),
+        'setting': int(config.get('setting', 1)),
+        'num_candidates': num_candidates,
+        'candidate_handoff_cap': handoff_cap,
+        'access_reorder_enabled': bool(use_access_reorder),
+        'access_bucket_gamma': float(access_bucket_gamma),
+        'timestamp': time.strftime('%m%d%H%M'),
+        'subset_manifest': config['subset_manifest'],
+        'subset_manifest_sha256': manifest['metadata'].get('content_sha256', ''),
+        'host_fingerprint': host_fingerprint(),
+        'stage1_latency_ms': {
+            'online_total_mean': float(arr.mean()) if per_query_ms else 0.0,
+            'online_total_p95': float(_np.percentile(arr, 95)) if per_query_ms else 0.0,
+            'online_total_std': float(arr.std()) if per_query_ms else 0.0,
+            'n_processed': int(n_processed),
+            'n_target': int(n_target),
+            'warmup_n': len(manifest.get('warmup_query_ids', [])),
+            'warmup_n_used': warmup_n_used,
+            'validity': 'full_subset' if (n_processed >= n_target and not cap_hit) else 'truncated_subset',
+            'wall_seconds': float(wall_seconds),
+            'cap_hit': bool(cap_hit),
+            'strict_latency_contract': 'batch1_candidate_handoff_full_path',
+            'latency_batch_size': 1,
+        },
+    }
+    avg_cands = sum(r['num_candidates'] for r in results) / len(results) if results else 0.0
+    metrics = {
+        'avg_candidates_per_query': avg_cands,
+        'seconds_per_query': arr.mean() / 1000.0 if per_query_ms else 0.0,
+        'total_queries': n_processed,
+    }
+    output = {'metadata': metadata, 'metrics': metrics, 'results': results}
+
+    out_path = config.get('output_json')
+    if not out_path:
+        dataset_name = config.get('dataset', 'unknown')
+        out_dir = config.get('candidate_output_dir', 'candidates')
+        os.makedirs(out_dir, exist_ok=True)
+        out_path = os.path.join(out_dir,
+            f"{dataset_name}_grdr_{num_candidates}_candidates_t{config.get('setting', 1)}_latency.json")
+    os.makedirs(os.path.dirname(out_path) or '.', exist_ok=True)
+    with open(out_path, 'w') as f:
+        json.dump(output, f, indent=2)
+    print(f"Pass-B GRDR candidate JSON written to {out_path}")
+    print(f"  stage1 mean ms/query={metadata['stage1_latency_ms']['online_total_mean']:.2f}"
+          f"  n_processed={n_processed}/{n_target}"
+          f"  validity={metadata['stage1_latency_ms']['validity']}")
+
+
 def kmeans(x, ncentroids=10, niter=100, seed=42):
-    """Run FAISS k-means clustering."""
+    """Run FAISS k-means clustering; uses GPU if faiss-gpu is available."""
     verbose = True
     x = np.array(x, dtype=np.float32)
     d = x.shape[1]
     n = x.shape[0] // 10
-    model = faiss.Kmeans(d, ncentroids, niter=niter, max_points_per_centroid=n, verbose=verbose, seed=seed)
+    use_gpu = hasattr(faiss, 'StandardGpuResources')
+    model = faiss.Kmeans(d, ncentroids, niter=niter, max_points_per_centroid=n, verbose=verbose, seed=seed, gpu=use_gpu)
     model.train(x)
     D, I = model.index.search(x, 1)
     code = [i[0] for i in I.tolist()]
