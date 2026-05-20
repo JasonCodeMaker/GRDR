@@ -156,6 +156,8 @@ def parse_args():
                        help='Resume progressive training from this loop index (0-based). Use with --init_checkpoint to extend an existing l=start_loop ckpt with the next code layer.')
     parser.add_argument('--init_checkpoint', type=str, default=None,
                        help='Initial checkpoint when --start_loop > 0; must be the model-{start_loop}-fit/best_model.pt of a prior run with the same codebook width.')
+    parser.add_argument('--skip_pretrain', action='store_true', default=False,
+                       help='When --start_loop=0 and --init_checkpoint is provided, skip the loop-0 pretrain train() call and reuse the init_checkpoint as model-1-pre/best_model.pt. Used to resume a chain whose pretrain finished but whose subsequent kmeans/main/fit phases were interrupted.')
 
     args = parser.parse_args()
 
@@ -192,6 +194,9 @@ def main():
         if args.start_loop > 0 and checkpoint is None:
             raise ValueError(f'--start_loop={args.start_loop} requires --init_checkpoint')
 
+        if args.skip_pretrain and (args.start_loop != 0 or args.init_checkpoint is None):
+            raise ValueError('--skip_pretrain requires --start_loop=0 and --init_checkpoint')
+
         for loop in range(args.start_loop, args.max_length):
             # Phase 1: Pre-train
             config['loop'] = loop
@@ -202,7 +207,11 @@ def main():
             config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
-            checkpoint, global_step = train(config, global_step)
+            if loop == 0 and args.skip_pretrain:
+                print(f'--skip_pretrain: reusing init_checkpoint as model-1-pre/best_model.pt: {args.init_checkpoint}')
+                checkpoint = args.init_checkpoint
+            else:
+                checkpoint, global_step = train(config, global_step)
             test_dr(config, checkpoint)
 
             # Phase 2: Main Training
