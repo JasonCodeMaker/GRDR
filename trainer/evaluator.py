@@ -1,3 +1,4 @@
+import gc
 import json
 import math
 import os
@@ -107,9 +108,14 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
     encode_video = type in ('both', 'video')
     encode_query = type in ('both', 'query')
 
-    video_embeddings_list, video_code_list = [], []
-    query_embeddings_list, query_code_list = [], []
+    # Preallocate contiguous output arrays to avoid the Python-list-of-ndarrays
+    # transient peak; shapes inferred from the first batch's model output.
+    N = len(data_loader.dataset)
+    video_embeddings_array = None
+    query_embeddings_array = None
+    video_code_list, query_code_list = [], []
     sample_keys_ordered = []
+    offset = 0
 
     for batch in tqdm(data_loader):
         batch = {k: v.cuda() if isinstance(v, torch.Tensor) else v
@@ -142,21 +148,36 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
             query_emb = query_output.total_embeds.cpu().numpy()
             query_codes = query_output.probability.argmax(-1).cpu().tolist()
 
-        for i in range(len(batch['video_ids'])):
+        B = len(batch['video_ids'])
+        if encode_video and video_embeddings_array is None:
+            video_embeddings_array = np.empty((N,) + video_emb.shape[1:], dtype=np.float32)
+        if encode_query and query_embeddings_array is None:
+            query_embeddings_array = np.empty((N,) + query_emb.shape[1:], dtype=np.float32)
+
+        if encode_video:
+            video_embeddings_array[offset:offset + B] = video_emb
+        if encode_query:
+            query_embeddings_array[offset:offset + B] = query_emb
+
+        for i in range(B):
             sample_key = batch['video_ids'][i]
             sample_keys_ordered.append(sample_key)
             if encode_video:
-                video_embeddings_list.append(video_emb[i])
                 video_code_list.append(video_codes[i])
             if encode_query:
-                query_embeddings_list.append(query_emb[i])
                 query_code_list.append(query_codes[i])
+        offset += B
+
+    # Trim if the dataset yielded fewer samples than len(dataset) (shouldn't happen
+    # with shuffle=False + batched DataLoader, but be defensive).
+    if encode_video and video_embeddings_array is not None and offset != N:
+        video_embeddings_array = video_embeddings_array[:offset]
+    if encode_query and query_embeddings_array is not None and offset != N:
+        query_embeddings_array = query_embeddings_array[:offset]
 
     if encode_video:
-        video_embeddings_array = np.array(video_embeddings_list, dtype=np.float32)
         video_code_dict = dict(zip(sample_keys_ordered, video_code_list))
     if encode_query:
-        query_embeddings_array = np.array(query_embeddings_list, dtype=np.float32)
         query_code_dict = dict(zip(sample_keys_ordered, query_code_list))
 
     if type == 'both':
@@ -1389,11 +1410,15 @@ def norm_by_prefix(collection, prefix):
     if prefix is None:
         prefix = [0 for _ in range(len(collection))]
     prefix = [str(x) for x in prefix]
+    # Uniform prefix → per-group mean equals the global mean and scale is hard-coded
+    # to 1 below, so the function is mathematically a no-op. Skip to avoid the full
+    # allocation of new_collection (saves ~22 GB at Panda 2.15M × pseudo scale).
+    if len(set(prefix)) <= 1:
+        return collection
     prefix_code = defaultdict(list)
     for c, p in zip(range(len(prefix)), prefix):
         prefix_code[p].append(c)
-    from copy import deepcopy
-    new_collection = deepcopy(collection)
+    new_collection = np.empty_like(collection)
     global_mean = collection.mean(axis=0)
     global_var = collection.var(axis=0)
     for p, p_code in prefix_code.items():
@@ -1491,6 +1516,12 @@ def do_epoch_encode(model: GRDR, train_dataset: VideoTextDataset,
     print('Video_code conflict', conflict(video_code_list, prev_code_list))
 
     normed_collection = norm_by_prefix(video_embeddings_array, prev_code_list)
+    # Free the original embeddings array now that normed_collection (the same view
+    # when prefix is uniform, otherwise a separate buffer) is the only downstream
+    # consumer for kmeans (~22 GB at Panda scale).
+    if normed_collection is not video_embeddings_array:
+        del video_embeddings_array
+        gc.collect()
     nc = n_code
     centroids, code = kmeans(normed_collection, ncentroids=nc, niter=100)
     print('Kmeans balance', balance(code, prev_code_list))
@@ -1588,6 +1619,11 @@ def test_dr(config, checkpoint):
             use_pseudo_queries=use_pseudo_queries
         )
         video_codes = {s['video_id']: [0] for s in temp_dataset.samples}
+        # temp_dataset is only used to build the video_codes seed; drop it before
+        # train_dataset is constructed so its 10.75M-entry samples list does not
+        # remain resident alongside the real train_dataset (~6 GB at Panda scale).
+        del temp_dataset
+        gc.collect()
 
     use_pseudo_queries = config.get('use_pseudo_queries', False)
     train_dataset = VideoTextDataset(
