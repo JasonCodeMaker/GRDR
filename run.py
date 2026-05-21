@@ -158,7 +158,7 @@ def parse_args():
     parser.add_argument('--init_checkpoint', type=str, default=None,
                        help='Initial checkpoint when --start_loop > 0; must be the model-{start_loop}-fit/best_model.pt of a prior run with the same codebook width.')
     parser.add_argument('--skip_pretrain', action='store_true', default=False,
-                       help='When --start_loop=0 and --init_checkpoint is provided, skip the loop-0 pretrain train() call and reuse the init_checkpoint as model-1-pre/best_model.pt. Used to resume a chain whose pretrain finished but whose subsequent kmeans/main/fit phases were interrupted.')
+                       help='When --init_checkpoint is a model-{start_loop+1}-pre/best_model.pt, skip that loop-{start_loop} pretrain train() call and reuse the init_checkpoint. Resumes a chain whose pretrain finished but whose subsequent kmeans/main/fit phases were interrupted.')
 
     args = parser.parse_args()
 
@@ -195,8 +195,8 @@ def main():
         if args.start_loop > 0 and checkpoint is None:
             raise ValueError(f'--start_loop={args.start_loop} requires --init_checkpoint')
 
-        if args.skip_pretrain and (args.start_loop != 0 or args.init_checkpoint is None):
-            raise ValueError('--skip_pretrain requires --start_loop=0 and --init_checkpoint')
+        if args.skip_pretrain and args.init_checkpoint is None:
+            raise ValueError('--skip_pretrain requires --init_checkpoint')
 
         # Build feature cache once for the whole chain. Each train()/test_dr() call would
         # otherwise reload the same 4 pickles (~3 min × 12 calls). load_train_text is gated
@@ -226,8 +226,8 @@ def main():
             config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
-            if loop == 0 and args.skip_pretrain:
-                print(f'--skip_pretrain: reusing init_checkpoint as model-1-pre/best_model.pt: {args.init_checkpoint}')
+            if loop == args.start_loop and args.skip_pretrain:
+                print(f'--skip_pretrain: reusing init_checkpoint as model-{loop + 1}-pre/best_model.pt: {args.init_checkpoint}')
                 checkpoint = args.init_checkpoint
             else:
                 checkpoint, global_step = train(config, global_step)
