@@ -1372,47 +1372,71 @@ def constrained_km(data, n_clusters=512):
     return clf.cluster_centers_, clf.labels_.tolist()
 
 
+def _balance_flat(code_arr, ncentroids):
+    """Vectorised inner balance: counts each centroid via np.bincount in O(N + C)."""
+    n = code_arr.size
+    if n == 0:
+        return 0.0
+    counts = np.bincount(code_arr, minlength=ncentroids)[:ncentroids]
+    base = n // ncentroids
+    move_score = int(np.abs(counts - base).sum())
+    return 1 - move_score / n / 2
+
+
 def balance(code, prefix=None, ncentroids=10):
-    """Compute balance score for code distribution."""
+    """Compute balance score for code distribution (O(N + C); was O(C*N))."""
+    code_arr = np.asarray(code, dtype=np.int64)
     if prefix is not None:
-        prefix = [str(x) for x in prefix]
-        prefix_code = defaultdict(list)
-        for c, p in zip(code, prefix):
-            prefix_code[p].append(c)
-        scores = []
-        for p, p_code in prefix_code.items():
-            scores.append(balance(p_code, ncentroids=ncentroids))
-        return {'Avg': sum(scores) / len(scores), 'Max': max(scores), 'Min': min(scores), 'Flat': balance(code)}
-    num = [code.count(i) for i in range(ncentroids)]
-    base = len(code) // ncentroids
-    move_score = sum([abs(j - base) for j in num])
-    score = 1 - move_score / len(code) / 2
-    return score
+        prefix_strs = [str(x) for x in prefix]
+        _, prefix_labels = np.unique(prefix_strs, return_inverse=True)
+        # Sort once + contiguous-split is O(N log N) total, vs O(n_buckets * N) for per-bucket masks.
+        sort_idx = np.argsort(prefix_labels, kind='stable')
+        sorted_codes = code_arr[sort_idx]
+        sorted_labels = prefix_labels[sort_idx]
+        _, seg_starts = np.unique(sorted_labels, return_index=True)
+        segments = np.split(sorted_codes, seg_starts[1:])
+        scores = [_balance_flat(seg, ncentroids) for seg in segments]
+        if not scores:
+            return {'Avg': 0.0, 'Max': 0.0, 'Min': 0.0, 'Flat': 0.0}
+        return {
+            'Avg': sum(scores) / len(scores),
+            'Max': max(scores),
+            'Min': min(scores),
+            'Flat': _balance_flat(code_arr, 10),  # match original `balance(code)` default ncentroids=10
+        }
+    return _balance_flat(code_arr, ncentroids)
 
 
 def conflict(code, prefix=None):
-    """Compute conflict statistics for code distribution."""
+    """Compute conflict statistics for code distribution (O(N log N); was multi-pass O(N) Python loops)."""
+    code_arr = np.asarray(code, dtype=np.int64)
+    n = code_arr.size
+    if n == 0:
+        return {'Max': 0, 'Min': 0, 'Type': 0, '%': 0.0}
     if prefix is not None:
-        prefix = [str(x) for x in prefix]
-        code = [f'{p}{c}' for c, p in zip(code, prefix)]
-    code = [str(c) for c in code]
-    freq_count = defaultdict(int)
-    for c in code:
-        freq_count[c] += 1
-    max_value = max(list(freq_count.values()))
-    min_value = min(list(freq_count.values()))
-    len_set = len(set(code))
-    return {'Max': max_value, 'Min': min_value, 'Type': len_set, '%': len_set / len(code)}
+        # Factorise list-of-list prefixes into compact int labels, then build a unique composite key.
+        prefix_strs = [str(x) for x in prefix]
+        _, prefix_labels = np.unique(prefix_strs, return_inverse=True)
+        max_code_plus_1 = int(code_arr.max()) + 1
+        combined = prefix_labels.astype(np.int64) * max_code_plus_1 + code_arr
+    else:
+        combined = code_arr
+    _, counts = np.unique(combined, return_counts=True)
+    return {
+        'Max': int(counts.max()),
+        'Min': int(counts.min()),
+        'Type': int(counts.size),
+        '%': float(counts.size / n),
+    }
 
 
 def norm_by_prefix(collection, prefix):
-    """Normalize collection by prefix groups."""
+    """Per-prefix mean re-centering. Output: x - prefix_mean + global_mean."""
     if prefix is None:
         prefix = [0 for _ in range(len(collection))]
     prefix = [str(x) for x in prefix]
-    # Uniform prefix → per-group mean equals the global mean and scale is hard-coded
-    # to 1 below, so the function is mathematically a no-op. Skip to avoid the full
-    # allocation of new_collection (saves ~22 GB at Panda 2.15M × pseudo scale).
+    # Uniform prefix → per-group mean equals the global mean, so the operation is a no-op.
+    # Skip to avoid the full allocation of new_collection (saves ~22 GB at Panda 2.15M × pseudo scale).
     if len(set(prefix)) <= 1:
         return collection
     prefix_code = defaultdict(list)
@@ -1420,17 +1444,10 @@ def norm_by_prefix(collection, prefix):
         prefix_code[p].append(c)
     new_collection = np.empty_like(collection)
     global_mean = collection.mean(axis=0)
-    global_var = collection.var(axis=0)
     for p, p_code in prefix_code.items():
         p_collection = collection[p_code]
         mean_value = p_collection.mean(axis=0)
-        var_value = p_collection.var(axis=0)
-        var_value[var_value == 0] = 1
-        scale = global_var / var_value
-        scale[np.isnan(scale)] = 1
-        scale = 1
-        p_collection = (p_collection - mean_value + global_mean) * scale
-        new_collection[p_code] = p_collection
+        new_collection[p_code] = p_collection - mean_value + global_mean
     return new_collection
 
 
