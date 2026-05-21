@@ -23,6 +23,7 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
+from datasets.media_utils import resolve_media_path
 from utils.checkpoint import load_state_dict_compat
 
 
@@ -78,17 +79,19 @@ class VideoFeatureExtractor:
     Extract and cache video frame-level CLIP embeddings.
     """
 
-    def __init__(self, model, config, cache_dir: str, device='cuda'):
+    def __init__(self, model, config, cache_dir: str, device='cuda', split_type: str = 'test'):
         """
         Args:
             model: XPool model (CLIPBaseline)
             config: Configuration object
             cache_dir: Directory to save cached features
             device: Device to run extraction on
+            split_type: 'train' or 'test' (for DiDeMo path resolution)
         """
         self.model = model
         self.config = config
         self.cache_dir = cache_dir
+        self.split_type = split_type
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
         # Create cache directory
@@ -108,24 +111,10 @@ class VideoFeatureExtractor:
         print(f"Cache directory: {cache_dir}")
 
     def _get_video_path(self, video_id: str, videos_dir: str) -> str:
-        """
-        Construct dataset-specific video path.
-        
-        Args:
-            video_id: Video identifier
-            videos_dir: Base directory containing videos
-            
-        Returns:
-            Full path to video file
-        """
-        if self.config.dataset_name == 'LSMDC':
-            clip_prefix = video_id.split('.')[0][:-3]
-            video_path = os.path.join(videos_dir, clip_prefix, video_id + '.avi')
-        else:
-            # Default structure for other datasets (MSRVTT, MSVD, ACTNET)
-            video_path = os.path.join(videos_dir, video_id + '.mp4')
-        
-        return video_path
+        """Resolve a video_id to an existing frame-dir or video-file path via resolve_media_path."""
+        return resolve_media_path(
+            self.config.dataset_name, videos_dir, video_id, split_type=self.split_type
+        )
 
     def extract_video_features(self, video_id: str, video_path: str) -> np.ndarray:
         """
@@ -152,8 +141,8 @@ class VideoFeatureExtractor:
             else:
                 return cached_data['frame_embeds']
 
-        # Load video frames
-        frames, frame_indices = VideoCapture.load_frames_from_video(
+        # Load frames (handles both frame-dirs and video files)
+        frames, frame_indices = VideoCapture.load_frames(
             video_path,
             self.config.num_frames,
             self.config.video_sample_type
@@ -283,7 +272,8 @@ def main():
         model=model,
         config=config,
         cache_dir=cache_dir,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        split_type=args.split,
     )
 
 

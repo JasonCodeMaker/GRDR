@@ -151,6 +151,8 @@ class Trainer(BaseTrainer):
         self.window_metric = defaultdict(lambda: deque(maxlen=config.eval_window_size))
         self.best_window = -1.0
         self.best = -1.0
+        self.no_improve_count = 0
+        self.early_stop_patience = getattr(config, 'early_stop_patience', 0)
 
     def validate(self):
         """
@@ -384,9 +386,16 @@ class Trainer(BaseTrainer):
                 if val_res['R1'] > self.best:
                     self.best = val_res['R1']
                     self._save_checkpoint(epoch, save_best=True)
+                    self.no_improve_count = 0
+                else:
+                    self.no_improve_count += 1
 
                 print(" Current Best Window Average R@1 is {}".format(self.best_window))
                 print(" Current Best R@1 is {}\n\n".format(self.best))
+
+                if self.early_stop_patience > 0 and self.no_improve_count >= self.early_stop_patience:
+                    print(f"Early-stop: R@1 has not improved for {self.no_improve_count} consecutive evals (patience={self.early_stop_patience}); requesting stop after this epoch.")
+                    self.stop_flag = True
 
         res = {
             'loss_train':  total_loss / num_steps

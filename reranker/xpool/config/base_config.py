@@ -19,6 +19,8 @@ class Config(ABC):
         self.log_step = args.log_step
         self.evals_per_epoch = args.evals_per_epoch
         self.load_epoch = args.load_epoch
+        self.best_r1_floor = args.best_r1_floor
+        self.early_stop_patience = args.early_stop_patience
         self.eval_window_size = args.eval_window_size
         self.metric = args.metric
 

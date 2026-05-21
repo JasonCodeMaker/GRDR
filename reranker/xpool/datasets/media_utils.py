@@ -104,6 +104,14 @@ def resolve_media_path(dataset_name: str, media_root: str, video_id: str, split_
             os.path.join(media_root, clip_prefix, normalized_id + '.avi'),
             os.path.join(media_root, clip_prefix, normalized_id),
         ])
+    elif dataset_name == 'PANDA':
+        # video_id is e.g. 'train/00000000_-xxx_clip00.mp4'. Frame layout:
+        # <videos_dir>/<split>/<video_id_no_ext>/frame_NNN.jpg
+        candidates.extend([
+            os.path.join(media_root, normalized_id),
+            os.path.join(media_root, video_id),
+            os.path.join(media_root, normalized_id + '.mp4'),
+        ])
     else:
         candidates.extend([
             os.path.join(media_root, video_id),

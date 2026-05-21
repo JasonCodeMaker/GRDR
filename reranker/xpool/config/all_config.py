@@ -16,6 +16,8 @@ class AllConfig(Config):
         parser.add_argument('--dataset_name', type=str, default='MSRVTT', help="Dataset name")
         parser.add_argument('--videos_dir', type=str, default='dataset/msrvtt_data/MSRVTT_Videos', help="Location of videos")
         parser.add_argument('--msrvtt_train_file', type=str, default='9k')
+        parser.add_argument('--panda_use_pseudo_queries', action='store_true', default=False,
+                            help="PANDA only: train on panda_ret_train_addition.json (P7 pseudo-queries). Default off uses panda_ret_train.json (original 2.15M captions).")
         parser.add_argument('--num_frames', type=int, default=12)
         parser.add_argument('--video_sample_type', default='uniform', help="'rand'/'uniform'")
         parser.add_argument('--input_res', type=int, default=224)
@@ -27,6 +29,8 @@ class AllConfig(Config):
         parser.add_argument('--log_step', type=int, default=10, help="Print training log every n steps")
         parser.add_argument('--evals_per_epoch', type=int, default=5, help="Number of times to evaluate per epoch")
         parser.add_argument('--load_epoch', type=int, help="Epoch to load from exp_name, or -1 to load model_best.pth")
+        parser.add_argument('--best_r1_floor', type=float, default=-1.0, help="Seed Trainer.best so a resumed run will not overwrite model_best.pth unless R@1 exceeds this floor")
+        parser.add_argument('--early_stop_patience', type=int, default=0, help="Stop training when val R@1 fails to improve for this many consecutive evals (0 = disabled)")
         parser.add_argument('--eval_window_size', type=int, default=5, help="Size of window to average metrics")
         parser.add_argument('--metric', type=str, default='t2v', help="'t2v'/'v2t'")
 

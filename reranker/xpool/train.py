@@ -72,6 +72,21 @@ def main():
                       writer=writer,
                       tokenizer=tokenizer)
 
+    if getattr(config, 'load_epoch', None) is not None:
+        if config.load_epoch < 0:
+            ckpt_path = os.path.join(config.model_path, "model_best.pth")
+        else:
+            ckpt_path = os.path.join(config.model_path, f"checkpoint-epoch{config.load_epoch}.pth")
+        trainer.load_checkpoint(ckpt_path)
+        steps_per_epoch = len(train_data_loader)
+        warmstart_steps = (trainer.start_epoch - 1) * steps_per_epoch
+        for _ in range(warmstart_steps):
+            scheduler.step()
+        print(f"Scheduler fast-forwarded by {warmstart_steps} steps to match start_epoch={trainer.start_epoch}")
+        if getattr(config, 'best_r1_floor', -1.0) > 0:
+            trainer.best = config.best_r1_floor
+            print(f"Seeded trainer.best = {trainer.best} (resume floor; model_best.pth will only be overwritten if R@1 exceeds this)")
+
     trainer.train()
 
 

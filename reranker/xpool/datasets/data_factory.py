@@ -7,6 +7,7 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
+from datasets.panda_dataset import PandaDataset, _panda_train_json_path
 from datasets.video_only_dataset import VideoOnlyDataset
 from datasets.media_utils import resolve_media_path
 from torch.utils.data import DataLoader
@@ -70,6 +71,16 @@ class DataFactory:
                 return DataLoader(dataset, batch_size=config.batch_size,
                             shuffle=False, num_workers=config.num_workers)
 
+        elif config.dataset_name == 'PANDA':
+            if split_type == 'train':
+                dataset = PandaDataset(config, split_type, train_img_tfms)
+                return DataLoader(dataset, batch_size=config.batch_size,
+                            shuffle=True, num_workers=config.num_workers)
+            else:
+                dataset = PandaDataset(config, split_type, test_img_tfms)
+                return DataLoader(dataset, batch_size=config.batch_size,
+                            shuffle=False, num_workers=config.num_workers)
+
         else:
             raise NotImplementedError
 
@@ -130,6 +141,17 @@ class DataFactory:
             annotations = load_json(anno_file)
             # Strip .mp4 suffix to match cache file naming
             video_ids = [item['video'].replace('.mp4', '') for item in annotations]
+            return video_ids, config.videos_dir, '.mp4', None
+
+        elif config.dataset_name == "PANDA":
+            annotations = load_json(_panda_train_json_path(config))
+            seen = set()
+            video_ids = []
+            for item in annotations:
+                vid = item['video'].replace('.mp4', '')
+                if vid not in seen:
+                    seen.add(vid)
+                    video_ids.append(vid)
             return video_ids, config.videos_dir, '.mp4', None
 
         else:
