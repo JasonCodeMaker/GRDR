@@ -81,6 +81,16 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 - When a research theme is complete or paused, move the whole package to `research/archive/<YYYY-MM-DD>-<slug>/`.
 - Stable shared entrypoints stay in `scripts/`; one-off experiment scripts belong in the owning research package.
 
+## Research Doc Style
+
+Any new HTML doc under `research_html/packages/<pkg-id>/docs/` MUST start from the shared template and follow the style guide. This keeps every doc dashboard-wired (status-strip + package-nav) and visually consistent.
+
+- **Skeleton:** copy `research_html/templates/doc-template.html`. Replace the six template variables (`$package_id`, `$doc_title`, `$eyebrow`, `$lead`, `$last_updated`, `$root_prefix`), delete the demo `<section data-section="primitives">`, then write the doc's real sections.
+- **When to reach for each primitive:** see `research_html/templates/doc-style-guide.html`. It is the canonical reference for `pre.diagram`, `pre.code`, `.callout` (+`.warn`/`.ok`), `table.data-table`, `span.pill-mono`, `h2.stage-title`+`step-num`, `p.kv-mini`. Authors should re-read the style guide before creating a new doc.
+- **Hard rules:** keep the shell verbatim (`data-status-strip`, `data-package-nav`, footer `<time data-field="last-updated">`, and the three trailing `<script>` tags). Do not invent new block classes; do not add page-local CSS beyond the primitive overrides at the top of the template. Bump the footer date with a short scope phrase on every meaningful edit.
+- **Section composition is content-agnostic:** the template prescribes the shell and the primitives, not section count, section order, or section topics. A perf-fix doc can be one card; a full pipeline walk-through can be eight. Use only the primitives that earn their place.
+- **The exemplar:** `research_html/packages/2026-05-16-panda-pseudo-queries-multiview/docs/training_pipeline.html` is the reference for what a fully-fleshed-out doc looks like under this style.
+
 ## Runtime Ops
 
 - Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.
