@@ -87,9 +87,91 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 - Prefer named `tmux` sessions/windows and report the attach command so the run can be monitored live.
 - Enforce the Fact Propagation Contract on every per-turn live cycle: between the tracker live-check update and the §5 status line, run `python research_html/packages/<pkg-id>/scripts/propagate_facts.py`; for each event listed in the report, update its owning surfaces (`results.html`, `next-action.html`, `research_html/data/research-packages.js`, tracker Resume Block) in the same turn, then advance the cursor with `propagate_facts.py --bump`. A non-empty report at the Stop Gate is a workflow violation.
 
+## Learnings Update Protocol
+
+The dashboard's cross-package learnings index (`research_html/learnings.html`) is a derived view over `research_html/data/research-packages.js`. The data file is the canonical store; `learnings.html` re-renders on page load. This protocol fixes *when* to write to that data file and *how* to keep it trustworthy. It extends — does not replace — the Fact Propagation Contract above.
+
+### Core principles
+
+1. **Upstream surface is the witness, the data file is the index.** A `methodsTried[]` row is written to `research-packages.js` *only after* the corresponding row exists in the package's `results.html` with a stable section anchor, and the `evidencePath` resolves to a real file or anchor. Never invent a row from memory.
+2. **Drafts are auto-detected; writes are user-acked at terminal transitions.** In-progress facts (E1, E2 below) update without user ack because the source-of-truth surface already exists. Terminal facts (E3–E6) require T1 user ack.
+3. **Atomic per-turn closure.** Any turn that mutates a learnings-relevant field must, in the same turn, touch all of: upstream surface row → `research-packages.js` → tracker Resume Block `lastAction` → run `--lint-status`. A non-empty lint report is a Stop-Gate violation.
+
+### Event trigger table
+
+| Event | Trigger (where it originates) | User ack | Fields written in `research-packages.js` |
+|---|---|---|---|
+| **E1. Per-experiment verdict finalized** | `results.html` result-gate row gains `pass` / `fail` / `inconclusive` in `<td data-decision>` AND artifact verification recorded | none | Append one `methodsTried[]` row |
+| **E2. In-progress live update** | tracker live-check update, plan revision, blocker change | none | `status`, `activeGate`, `primaryMetricVsGate`, `currentBlocker`, `openRuns`, `lastAction`, `lastUpdated` |
+| **E3. Terminal status transition** | `next-action.html` chosen-route resolves to a terminal lane move (`archive_or_stop`, adoption) | **T1** | `category` (lane move), `status` (terminal value), `terminationMessage`; freeze `methodsTried[]` |
+| **E4. Adoption** | CLAUDE.md "Current Best" edit, code merge into `models/` / `trainer/`, or a new in-progress package starts citing the win | **T1** | `adoptionPath` (specific anchor or path) |
+| **E5. Supersession** | A newer success package replaces an older one | **T1** | On the *old* package: `status = SUPERSEDED`, `supersededBy = <new id>` |
+| **E6. Reopen marked** | User explicitly states a fail package should be revisitable under a named condition | **T1** | `status = ARCHIVED_REOPENABLE`, `reopenTrigger = "<condition>"` |
+
+### `methodsTried` row contract
+
+Every row is exactly six fields, drawn verbatim from the witnessing `results.html` row:
+
+```
+{ method, hypothesis, gate, measured, verdict, evidencePath }
+```
+
+- `verdict` ∈ `{pass, fail, inconclusive}`. Diagnostic-only rows are `inconclusive`, not `pass`.
+- `evidencePath` must resolve. Either a file under `var/research/...` / `output/...`, or an HTML anchor like `packages/<id>/results.html#<exp-anchor>`. If the anchor doesn't exist yet, write the row only after creating it.
+- N upstream result-gate rows may collapse to 1 `methodsTried` row when they share a method (e.g., a 9-cell sweep summarized as one entry that links to the cell-level data). Prefer aggregation; do not let `methodsTried[]` mirror the full result-gate table.
+- Single-seed `pass` is `inconclusive` until the gate's seed requirement is met.
+
+### Atomic per-turn closure
+
+When any event above fires, the same turn writes all four surfaces (or it doesn't write at all):
+
+1. **Upstream witness** — `results.html` row, `next-action.html` chosen-route, or whichever surface owns the source of truth. Must exist with a stable anchor before step 2.
+2. **`research_html/data/research-packages.js`** — the canonical row (append `methodsTried` for E1; update top-level fields for E2; update terminal fields for E3–E6).
+3. **`research_html/packages/<id>/tracker.html`** — Resume Block `lastAction` = one-line description of the write (e.g., `"2026-05-12 added methodsTried[BARS_cap350] (verdict=fail)"`).
+4. **Lint** — run `python research_html/scripts/learnings_lint.py lint-status` and `… lint-evidence`. A non-empty report at the Stop Gate is a workflow violation.
+
+`learnings.html` is not in this list — it re-derives on load. Do not edit `learnings.html` directly.
+
+### The dashboard-wide tool: `research_html/scripts/learnings_lint.py`
+
+Single Python entry point that enforces this protocol across all packages. Reads `data/schema.js` + `data/research-packages.js` via the bundled `dump_packages.js` (node) helper. Subcommands:
+
+| Command | What it does |
+|---|---|
+| `lint-status` | Schema lint per package: `(category, status)` legal; `_all` + status-specific required fields present; `forbidden` fields absent; `methodsTried` rows have the six fields and a legal verdict; cross-references (`supersededBy`, `promotedTo`) resolve; on-disk `packages/<id>/` ⇄ registry entries match. |
+| `lint-evidence` | Every `methodsTried[].evidencePath` and `lastDecisionEvidencePath` resolves. File-missing is a warning; anchor-missing is an error (a typo or stale claim). |
+| `scan-events [--pkg <id>]` | Runs the three draft writers: **E1** scans `results.html` `data-table="result-gate"` for finalized verdicts not yet in `methodsTried`; **E3** scans `next-action.html` `<div data-field="route">` for terminal-route language and proposes a `(category, status, terminationMessage)` block; **E4** scans `CLAUDE.md` for newly-cited package ids and proposes `adoptionPath`. Prints JSON drafts; does not write. |
+| `draft-method <pkg-id> <anchor>` | Print one JSON `methodsTried` row drafted from `results.html#<anchor>`. If the anchor does not yet exist on the row, the draft says so — add the anchor first. |
+| `draft-terminal <pkg-id>` | Print the JSON terminal block drafted from `next-action.html#chosen-route`. |
+| `all [--pkg <id>]` | `lint-status` + `lint-evidence` + `scan-events`. Exit non-zero if any error was found. |
+
+Add `--strict` to make warnings count toward the exit code (used by CI).
+
+### Stop-Gate sequence (the contract for every learnings-relevant turn)
+
+1. Make the upstream-witness edit (results.html / next-action.html / tracker.html / etc.).
+2. Update `research_html/data/research-packages.js`.
+3. Update tracker Resume Block `lastAction`.
+4. Run `python research_html/scripts/learnings_lint.py all`. Fix every error before closing the turn.
+5. If the turn includes a terminal status transition (E3–E6), confirm user ack is in hand.
+
+The `scan-events` output should be reviewed every time a package's `results.html` or `next-action.html` changes — it tells the agent *which* draft writes the current state implies.
+
+### Recovery: stale or wrong rows
+
+- **Wrong verdict** (later evidence contradicts): edit the row in place; update `measured` and `verdict`; add a follow-up `methodsTried` row only if the new evidence comes from a *different* method or a re-run with new code. Do not append a "correction" row to the same method.
+- **Stale evidencePath** (anchor removed or file moved): fix the upstream witness first (re-add the anchor in `results.html` or move the file), then update the row.
+- **Mistaken adoption**: if `adoptionPath` was set but never landed in CLAUDE.md / code, clear it; if status is `ADOPTED`, downgrade to `ADOPTED_PENDING_ACK` with a `lastAction` note.
+
+### What this protocol does NOT cover
+
+- `learnings.html` rendering (purely derived; edit `assets/research.js` if the view itself needs to change).
+- Per-experiment status tracking inside `experiments[]` — that's the tracker's resource-allocation table, not `methodsTried`.
+- Brainstorm-direction notes — those live in `direction` and `contributionSpineFlag`, not in `methodsTried`.
+
 ## Current Best
 
-Last updated: 2026-05-11
+Last updated: 2026-05-16
 
 ### MSR-VTT
 - Variant: `fit_bucket_l010_g10_k20_s42` (seed 42)
@@ -98,12 +180,33 @@ Last updated: 2026-05-11
 - Setting 2 (beam 15, avg 300.41): CanHit@20/50/100/all = 4.6 / 15.0 / 32.0 / 64.3; XPool R@1/5/10 = 17.4 / 32.2 / 40.6
 - Setting 2 compact budget gate: `avg_candidates_per_query <= 310`; rows above are not comparable compact champions.
 
-### Panda (Setting 1 only)
+### Panda (in-distribution Setting 1) — pre-trained anchor for zero-shot use
+- Variant: `panda_2150k_c4096l3_rq03_s42` (P14, 2.15M corpus, c=4096, l=3, seed 42, single-seed; multi-seed validation outstanding)
+- Ckpt: `output/GRDR/panda/champion_pretrained_zeroshot_c4096l3_2150k_s42/model-3-fit/best_model.pt` (hardlinked from `var/research/2026-05-11-panda-scaleup-zeroshot-scalability/output/GRDR/panda_2150k_c4096l3/panda/20260515012011-panda_2150k_c4096l3_rq03_s42/model-3-fit/best_model.pt`; same inode, both paths live)
+- Setting 1 seed 42 (beam 100, avg 103.93): CanHit@20/50/100/all = 80.70 / 90.52 / 95.57 / 95.77; MeanLogDiscount = 0.5493; train_test_collision = 0.477; sID utility = 0.975
+- Compact-budget gate: avg_candidates_per_query 103.93 (best Pareto across all measured 2.15M ckpts; −10.42 vs 1.65M c=1024 anchor with +2.02 CanHit@100 lift)
+- Promoted via `2026-05-11-panda-scaleup-zeroshot-scalability` package (success / ADOPTED 2026-05-16); supersedes the prior 818K c=512 P6 anchor for zero-shot use.
+
+### Panda (in-distribution, prior 818K 3-seed anchor, retained for reproducibility)
 - Variant: `panda_s1_p4_rq03_c512l3_s42` (P6 3-seed confirmed; seed 42 ckpt)
 - Ckpt: `var/research/2026-05-05-panda-setting1-full-run/output/GRDR/panda_setting1_p4/panda/20260509164015-panda_s1_p4_rq03_c512l3_s42/model-3-fit/best_model.pt`
 - Setting 1 seed 42 (beam 100, avg 125.95): CanHit@20/50/100/all = 75.54 / 86.95 / 92.80 / 94.01
 - Setting 1 3-seed mean (42/220/3407, beam 100, avg 127.15): CanHit@100 = 92.42 ± 0.38; FullSetHit@All = 93.83
 - Setting 2: not run.
+
+### Zero-shot transfer (4-dataset, BARS-on, X-Pool rerank) — pre-trained 2.15M c=4096 l=3 s42 vs supervised target
+| Dataset     | Setting | Pre-trained R@1 / R@5 / R@10 | Supervised target R@1 / R@5 / R@10 | Δ R@10 |
+| ----------- | :-----: | ---------------------------: | ---------------------------------: | :----: |
+| MSR-VTT     |    1    | 45.00 / 68.70 / 76.70        | 46.00 / 70.10 / 78.00              | −1.30  |
+| ActivityNet |    1    | 32.90 / 60.30 / 71.00        | 33.70 / 63.70 / 76.60              | −5.60  |
+| DiDeMo      |    1    | 39.48 / 66.20 / 74.28        | 39.90 / 65.80 / 74.20              | **+0.08** |
+| LSMDC       |    1    | 21.80 / 34.20 / 39.80        | 23.50 / 39.40 / 46.20              | −6.40  |
+| MSR-VTT     |    2    | 19.50 / 35.00 / 43.40        | 19.20 / 35.90 / 44.80              | −1.40  |
+| ActivityNet |    2    | 8.50 / 22.50 / 32.60         | 19.20 / 41.10 / 51.80              | −19.20 |
+| DiDeMo      |    2    | 19.24 / 33.70 / 38.38        | 15.50 / 29.70 / 36.10              | **+2.28** |
+| LSMDC       |    2    | 2.70 / 4.70 / 5.90           | 2.10 / 4.80 / 5.90                 | **0.00** |
+- 4-ds R@10 means: S1 65.44 vs 68.75 (gap −3.30); S2 30.07 vs 34.65 (gap −4.58). DiDeMo S2 exceeds supervised on every R@K; LSMDC S2 ties on R@10. ActivityNet S2 is the dominant remaining gap.
+- All 8 cells compact (avg_candidates_per_query ≤ 310; largest LSMDC S2 = 214.64). Single-seed s42 caveat applies.
 
 ## graphify
 
