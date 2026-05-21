@@ -34,6 +34,8 @@ __pycache__/
 /candidates/baseline/
 /candidates/*_ann_*_candidates_t*.json
 
+scripts/panda
+
 # Research packages are opt-in so abandoned directions stay local.
 /research/*
 /research/active/*

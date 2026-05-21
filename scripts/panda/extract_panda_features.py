@@ -182,18 +182,27 @@ def extract_video(model, clip_ids, split, args, device, use_bf16):
 
 
 def extract_text(model, tokenizer, records, split, args, device, use_bf16):
-    out_path = args.output_root / f'text_embeddings_{split}.pkl'
+    shard_idx = getattr(args, 'shard_idx', 0)
+    num_shards = getattr(args, 'num_shards', 1)
+    shard_suffix = f'_shard{shard_idx}of{num_shards}' if num_shards > 1 else ''
+    out_path = args.output_root / f'text_embeddings_{split}{shard_suffix}.pkl'
     merge_existing = getattr(args, 'merge_existing', False)
     if out_path.exists() and not merge_existing:
         print(f'[text] {out_path.name} exists, skipping')
         return
 
+    # Build (key, caption) for the FULL record list first so per-video caption_idx
+    # is identical across shards. Then keep only this shard's records (stride-N).
     captions, keys, counts = [], [], {}
     for vid, cap in records:
         idx = counts.get(vid, 0)
         counts[vid] = idx + 1
         keys.append(f'{vid}_{idx}')
         captions.append(cap)
+    if num_shards > 1:
+        keys = keys[shard_idx::num_shards]
+        captions = captions[shard_idx::num_shards]
+        print(f'[shard] shard={shard_idx}/{num_shards}  kept={len(keys)}')
 
     if merge_existing and out_path.exists():
         with open(out_path, 'rb') as f:
@@ -248,6 +257,10 @@ def main():
                         help='Text path: load existing pkl as seed, only compute missing keys, write merged pkl')
     parser.add_argument('--include-keys-file', type=Path, default=None,
                         help='Optional text file (one clip_id per line). If set, video and text paths process only listed clip_ids.')
+    parser.add_argument('--shard-idx', dest='shard_idx', type=int, default=0,
+                        help='Text path only: shard index (0..num_shards-1). Per-vid caption keys are computed on the full record list, then strided by shard_idx::num_shards. Output filename gains _shard{i}of{N} suffix when num_shards > 1.')
+    parser.add_argument('--num-shards', dest='num_shards', type=int, default=1,
+                        help='Text path only: total number of shards. Default 1 (no sharding).')
     args = parser.parse_args()
     args.frames_root = args.frames_root.resolve()
     args.annotation_root = args.annotation_root.resolve()
