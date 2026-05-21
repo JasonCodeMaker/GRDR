@@ -11,6 +11,7 @@ from tqdm import tqdm
 from models.grdr import GRDR, Codebook, QuantizeOutput, VideoOutput
 from trainer.trainer import OurTrainer, train, build_loss_weights
 from trainer.evaluator import test, test_dr
+from utils.data_utils import has_kmeans_cache, load_shared_features
 from utils.model_utils import seed_everything
 
 
@@ -197,6 +198,24 @@ def main():
         if args.skip_pretrain and (args.start_loop != 0 or args.init_checkpoint is None):
             raise ValueError('--skip_pretrain requires --start_loop=0 and --init_checkpoint')
 
+        # Build feature cache once for the whole chain. Each train()/test_dr() call would
+        # otherwise reload the same 4 pickles (~3 min × 12 calls). load_train_text is gated
+        # by the k-means cache because the only consumer of train_text is the k-means step,
+        # and its result is the cache itself; if the cache exists, we never need train_text.
+        train_kmeans_cached = has_kmeans_cache(
+            args.dataset, 'train', args.num_latent_tokens, args.cache_dir,
+            use_pseudo_queries=args.use_pseudo_queries
+        )
+        print(f'Pre-building feature cache for {args.dataset} (train_text load={not train_kmeans_cached})')
+        feature_cache = load_shared_features(
+            dataset_name=args.dataset,
+            features_root=args.features_root,
+            logger=print,
+            use_pseudo_queries=args.use_pseudo_queries,
+            load_train_text=not train_kmeans_cached,
+        )
+        config['feature_cache'] = feature_cache
+
         for loop in range(args.start_loop, args.max_length):
             # Phase 1: Pre-train
             config['loop'] = loop
@@ -212,6 +231,14 @@ def main():
                 checkpoint = args.init_checkpoint
             else:
                 checkpoint, global_step = train(config, global_step)
+            # Loop-0 pre is the only phase that consumes train_text (k-means build).
+            # Drop it before any subsequent phase to match the prior call-local memory profile.
+            if loop == 0 and feature_cache.get('train_text'):
+                import gc
+                n = len(feature_cache['train_text'])
+                feature_cache['train_text'] = {}
+                gc.collect()
+                print(f'Dropped train_text ({n} entries) from feature_cache after loop-0 pre k-means build')
             test_dr(config, checkpoint)
 
             # Phase 2: Main Training

@@ -323,9 +323,11 @@ class GRDR(nn.Module, GenerationMixin, ABC):
             else:
                 indices = self.video_rqvae.get_indices(video_features)
 
-            for i in range(len(batch['video_ids'])):
-                video_id = batch['video_ids'][i]
-                code = indices[i].cpu().tolist()
+            # One device-to-host sync per batch instead of one per sample.
+            all_codes = indices.cpu().tolist()
+
+            for i, video_id in enumerate(batch['video_ids']):
+                code = all_codes[i]
                 sample_codes_dict[video_id] = code
 
                 if return_quantized_features:

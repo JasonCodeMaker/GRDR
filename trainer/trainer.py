@@ -18,7 +18,7 @@ from transformers import T5Config
 from models.grdr import GRDR, QuantizeOutput, VideoOutput
 from utils.model_utils import create_videorqvae, get_optimizer, CodeDriftMonitor
 from utils.training_utils import safe_load, safe_load_embedding, safe_save
-from utils.data_utils import load_shared_features
+from utils.data_utils import has_kmeans_cache, kmeans_cache_path, load_shared_features
 from data.video_dataset import VideoTextDataset, collate_fn
 
 
@@ -186,9 +186,25 @@ class OurTrainer:
         bucket_route_loss = 0
         video_rank_loss = 0
         expanded_size_loss = 0
+        shared_scores = None
+        shared_positive_mask = None
+        bucket_sizes = None
         if loss_weights is not None:
             detach_video_route = bool(loss_weights.get('route_agree_stopgrad_video', False))
-            bucket_sizes = None
+            route_loss_enabled = (
+                loss_weights.get('route_agree_loss', 0) != 0 or
+                loss_weights.get('bucket_route_loss', 0) != 0 or
+                loss_weights.get('video_rank_loss', 0) != 0 or
+                loss_weights.get('expanded_size_loss', 0) != 0
+            )
+            if route_loss_enabled:
+                # Compute pair scores + positive mask once; reused across enabled losses.
+                shared_scores = OurTrainer._route_pair_scores(
+                    query_outputs.logits, vid_outputs.logits, detach_video=detach_video_route
+                )
+                shared_positive_mask = OurTrainer._positive_mask(
+                    batch.get('video_ids'), shared_scores.size(0), shared_scores.device
+                )
             if (
                 loss_weights.get('bucket_route_loss', 0) != 0 or
                 loss_weights.get('video_rank_loss', 0) != 0 or
@@ -206,7 +222,9 @@ class OurTrainer:
                 query_outputs.logits,
                 vid_outputs.logits,
                 video_ids=batch.get('video_ids'),
-                detach_video=detach_video_route
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
             )
 
         if loss_weights is not None and loss_weights.get('bucket_route_loss', 0) != 0:
@@ -216,7 +234,9 @@ class OurTrainer:
                 video_ids=batch.get('video_ids'),
                 bucket_sizes=bucket_sizes,
                 gamma=loss_weights.get('route_bucket_gamma', 1.0),
-                detach_video=detach_video_route
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
             )
 
         if loss_weights is not None and loss_weights.get('video_rank_loss', 0) != 0:
@@ -226,7 +246,9 @@ class OurTrainer:
                 video_ids=batch.get('video_ids'),
                 bucket_sizes=bucket_sizes,
                 beta=loss_weights.get('video_rank_beta', 0.5),
-                detach_video=detach_video_route
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
             )
 
         if loss_weights is not None and loss_weights.get('expanded_size_loss', 0) != 0:
@@ -234,7 +256,8 @@ class OurTrainer:
                 query_outputs.logits,
                 vid_outputs.logits,
                 bucket_sizes=bucket_sizes,
-                detach_video=detach_video_route
+                detach_video=detach_video_route,
+                scores=shared_scores,
             )
 
         return dict(
@@ -282,12 +305,11 @@ class OurTrainer:
             raise ValueError(
                 f"Expected {batch_size} video ids for route agreement loss, got {len(video_ids)}"
             )
-        base_ids = [OurTrainer._base_video_id(video_id) for video_id in video_ids]
-        return torch.tensor(
-            [[left == right for right in base_ids] for left in base_ids],
-            dtype=torch.bool,
-            device=device
-        )
+        # Factorise base ids into integer labels, then compare via broadcast (was O(B^2) Python).
+        base_ids = np.array([OurTrainer._base_video_id(v) for v in video_ids])
+        _, inverse = np.unique(base_ids, return_inverse=True)
+        inverse_t = torch.from_numpy(inverse).to(device)
+        return inverse_t.unsqueeze(0) == inverse_t.unsqueeze(1)
 
     @staticmethod
     def _route_pair_scores(query_logits, video_logits, detach_video=False, eps=1e-8):
@@ -330,24 +352,14 @@ class OurTrainer:
         return torch.tensor(sizes, dtype=torch.float32, device=device).clamp_min(1.0)
 
     @staticmethod
-    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, detach_video=False, eps=1e-8):
-        """
-        Multi-positive in-batch retrieval loss in semantic-ID distribution space.
-
-        Args:
-            query_logits: [B, L, C] query decoder logits over shared codebooks.
-            video_logits: [B, L, C] video tokenizer logits over the same codebooks.
-            video_ids: optional list of sample ids; rows with the same base video id
-                are treated as positives to avoid false negatives from duplicate captions.
-            detach_video: if true, route-agreement gradients stop at video logits.
-
-        Returns:
-            Scalar NLL where each query retrieves matching video rows by summing
-            log per-level code-distribution agreement.
-        """
-        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, detach_video=False, eps=1e-8,
+                                     scores=None, positive_mask=None):
+        """Multi-positive in-batch retrieval loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
         batch_size = scores.size(0)
-        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
         positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
         log_pos = torch.logsumexp(positive_scores, dim=1)
         log_all = torch.logsumexp(scores, dim=1)
@@ -355,16 +367,14 @@ class OurTrainer:
 
     @staticmethod
     def compute_bucket_route_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
-                                  gamma=1.0, detach_video=False, eps=1e-8):
-        """
-        Multi-positive route loss that prefers compact positive semantic-ID buckets.
-
-        bucket_sizes: optional [B] tensor aligned with video rows. A larger bucket
-            receives a smaller positive weight proportional to (size + 1)^-gamma.
-        """
-        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+                                  gamma=1.0, detach_video=False, eps=1e-8,
+                                  scores=None, positive_mask=None):
+        """Bucket-weighted multi-positive route loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
         batch_size = scores.size(0)
-        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
 
         if bucket_sizes is None:
             bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
@@ -386,13 +396,14 @@ class OurTrainer:
 
     @staticmethod
     def compute_video_rank_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
-                                beta=0.5, detach_video=False, eps=1e-8):
-        """
-        In-batch video-route ranking loss with a bucket-size expansion penalty.
-        """
-        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+                                beta=0.5, detach_video=False, eps=1e-8,
+                                scores=None, positive_mask=None):
+        """In-batch video-route ranking loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
         batch_size = scores.size(0)
-        positive_mask = OurTrainer._positive_mask(video_ids, batch_size, query_logits.device)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
 
         if bucket_sizes is not None:
             bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
@@ -404,11 +415,11 @@ class OurTrainer:
         return -(log_pos - log_all).mean()
 
     @staticmethod
-    def compute_expanded_size_loss(query_logits, video_logits, bucket_sizes=None, detach_video=False, eps=1e-8):
-        """
-        Expected log bucket size under the query-to-video-route distribution.
-        """
-        scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+    def compute_expanded_size_loss(query_logits, video_logits, bucket_sizes=None, detach_video=False, eps=1e-8,
+                                   scores=None):
+        """Expected log bucket size under the route distribution; accepts cached scores."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
         batch_size = scores.size(0)
         if bucket_sizes is None:
             bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
@@ -552,17 +563,30 @@ def train(config, global_step=0):
     dataset_name = config.get('dataset', 'msrvtt')
     features_root = config.get('features_root', './data_process/datasets/features')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
-
-    accelerator.print(f'Loading features for {dataset_name}...')
-    feature_cache = load_shared_features(
-        dataset_name=dataset_name,
-        features_root=features_root,
-        logger=accelerator,
-        use_pseudo_queries=use_pseudo_queries
-    )
-
     num_latent_tokens = config.get('num_latent_tokens', 4)
     cache_dir = config.get('cache_dir', './cache')
+    train_kmeans_cached = has_kmeans_cache(
+        dataset_name, 'train', num_latent_tokens, cache_dir,
+        use_pseudo_queries=use_pseudo_queries
+    )
+    if train_kmeans_cached:
+        accelerator.print(
+            "K-means cache found; skipping train text feature loads: "
+            f"{kmeans_cache_path(dataset_name, 'train', num_latent_tokens, cache_dir, use_pseudo_queries)}"
+        )
+
+    feature_cache = config.get('feature_cache')
+    if feature_cache is not None:
+        accelerator.print(f'Reusing pre-built feature_cache for {dataset_name} (skipping load_shared_features)')
+    else:
+        accelerator.print(f'Loading features for {dataset_name}...')
+        feature_cache = load_shared_features(
+            dataset_name=dataset_name,
+            features_root=features_root,
+            logger=accelerator,
+            use_pseudo_queries=use_pseudo_queries,
+            load_train_text=not train_kmeans_cached,
+        )
 
     video_codes, aux_ids = None, None
 
@@ -634,13 +658,10 @@ def train(config, global_step=0):
         generator=g,
         worker_init_fn=lambda worker_id: np.random.seed(config.get('seed', 42) + worker_id)
     )
-    # Calculate encoder LR scale based on loop index
     loop = config.get('loop', 0)
-    encoder_lr_scale = 1.0 ** loop
-    accelerator.print(f'Loop {loop}: Encoder LR scale = {encoder_lr_scale:.4f} (base_lr={lr}, encoder_lr={lr * encoder_lr_scale:.2e})')
 
     # Use get_optimizer to apply custom learning rates
-    optimizer = get_optimizer(model, lr=lr, code_length=code_length, encoder_lr_scale=encoder_lr_scale)
+    optimizer = get_optimizer(model, lr=lr, code_length=code_length)
     model, optimizer, data_loader = accelerator.prepare(model, optimizer, data_loader)
     scheduler = get_constant_schedule(optimizer)
 

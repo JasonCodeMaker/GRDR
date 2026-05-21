@@ -14,7 +14,7 @@ from tqdm import tqdm
 from models.grdr import GRDR, QuantizeOutput, VideoOutput
 from utils.model_utils import create_videorqvae, sinkhorn_raw
 from utils.training_utils import safe_load
-from utils.data_utils import load_shared_features
+from utils.data_utils import has_kmeans_cache, kmeans_cache_path, load_shared_features
 from data.video_dataset import VideoTextDataset, collate_fn
 
 
@@ -804,13 +804,29 @@ def test(config):
     use_access_reorder = config.get('inference_reorder_by_access_score', False)
     access_bucket_gamma = config.get('access_score_bucket_gamma', 0.0)
     handoff_cap = int(config.get('candidate_handoff_cap', 0) or 0)
+    setting = config.get('setting', 1)
+    needs_train_pool = setting == 2
+    train_kmeans_cached = has_kmeans_cache(
+        dataset_name, 'train', num_latent_tokens, cache_dir,
+        use_pseudo_queries=use_pseudo_queries
+    )
+    load_train_text = needs_train_pool and not train_kmeans_cached
+    if not needs_train_pool:
+        print("Setting 1 evaluation: skipping train video/text feature loads")
+    elif train_kmeans_cached:
+        print(
+            "K-means cache found; skipping train text feature loads: "
+            f"{kmeans_cache_path(dataset_name, 'train', num_latent_tokens, cache_dir, use_pseudo_queries)}"
+        )
 
     print(f'Loading features for {dataset_name}...')
     feature_cache = load_shared_features(
         dataset_name=dataset_name,
         features_root=features_root,
         logger=print,
-        use_pseudo_queries=use_pseudo_queries
+        use_pseudo_queries=use_pseudo_queries,
+        load_train_video=needs_train_pool,
+        load_train_text=load_train_text,
     )
 
     from transformers import T5Config, AutoTokenizer
@@ -866,7 +882,6 @@ def test(config):
         shuffle=False, num_workers=16
     )
 
-    setting = config.get('setting', 1)
     print(f"Setting: {setting} ({'train+test combined pool' if setting == 2 else 'test only pool'})")
 
     train_data_loader = None
@@ -1565,6 +1580,8 @@ def test_dr(config, checkpoint):
 
     dataset_name = config.get('dataset', 'msrvtt')
     features_root = config.get('features_root', './data_process/datasets/features')
+    num_latent_tokens = config.get('num_latent_tokens', 4)
+    cache_dir = config.get('cache_dir', './cache')
 
     print('DR evaluation for VideoTextDataset', f'{save_path}')
 
@@ -1600,13 +1617,28 @@ def test_dr(config, checkpoint):
     model.eval()
 
     use_pseudo_queries = config.get('use_pseudo_queries', False)
-    print(f'Loading features for {dataset_name}...')
-    feature_cache = load_shared_features(
-        dataset_name=dataset_name,
-        features_root=features_root,
-        logger=print,
+    train_kmeans_cached = has_kmeans_cache(
+        dataset_name, 'train', num_latent_tokens, cache_dir,
         use_pseudo_queries=use_pseudo_queries
     )
+    if train_kmeans_cached:
+        print(
+            "K-means cache found; skipping train text feature loads: "
+            f"{kmeans_cache_path(dataset_name, 'train', num_latent_tokens, cache_dir, use_pseudo_queries)}"
+        )
+    feature_cache = config.get('feature_cache')
+    if feature_cache is not None:
+        print(f'Reusing pre-built feature_cache for {dataset_name} (skipping load_shared_features)')
+    else:
+        print(f'Loading features for {dataset_name}...')
+        feature_cache = load_shared_features(
+            dataset_name=dataset_name,
+            features_root=features_root,
+            logger=print,
+            use_pseudo_queries=use_pseudo_queries,
+            load_train_text=not train_kmeans_cached,
+            load_test_text=False,
+        )
 
     best_model_path = checkpoint if checkpoint is not None else f'{save_path}/best_model.pt'
     if not os.path.exists(best_model_path):
@@ -1630,8 +1662,8 @@ def test_dr(config, checkpoint):
             tokenizer=tokenizer,
             split='train',
             max_text_len=128,
-            num_latent_tokens=config.get('num_latent_tokens', 4),
-            cache_dir=config.get('cache_dir', './cache'),
+            num_latent_tokens=num_latent_tokens,
+            cache_dir=cache_dir,
             ids=None,
             use_pseudo_queries=use_pseudo_queries
         )
@@ -1650,8 +1682,8 @@ def test_dr(config, checkpoint):
         tokenizer=tokenizer,
         split='train',
         max_text_len=128,
-        num_latent_tokens=config.get('num_latent_tokens', 4),
-        cache_dir=config.get('cache_dir', './cache'),
+        num_latent_tokens=num_latent_tokens,
+        cache_dir=cache_dir,
         ids=video_codes,
         use_pseudo_queries=use_pseudo_queries
     )
