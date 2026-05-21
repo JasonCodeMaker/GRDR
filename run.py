@@ -244,7 +244,18 @@ def main():
             # Phase 2: Main Training
             config['save_path'] = os.path.join(save_root, f'model-{loop + 1}')
             config['prev_model'] = checkpoint
-            config['codebook_init'] = f'{checkpoint}.kmeans.{args.code_num}'
+            # codebook_init must point at the kmeans.* artifact that test_dr just
+            # wrote to the model-{loop+1}-pre save_path of the CURRENT run. The
+            # previous form `f'{checkpoint}.kmeans.…'` resolved to the resume-source
+            # checkpoint's directory (e.g. the v3/init_checkpoint path) which
+            # FileNotFoundError'd on every multi-phase resume; the symlink hack we
+            # used to work around it produced a coupling between unrelated runs.
+            # Derive the path from the current save_root + the pre save_path that
+            # test_dr writes to so it always resolves to this run's own kmeans.
+            prev_save_path = os.path.join(save_root, f'model-{loop + 1}-pre')
+            config['codebook_init'] = os.path.join(
+                prev_save_path, f'best_model.pt.kmeans.{args.code_num}'
+            )
             config['epochs'] = args.main_epochs
             config['loss_w'] = 2
             config['lr'] = args.main_lr

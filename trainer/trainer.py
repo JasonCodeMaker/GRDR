@@ -163,16 +163,19 @@ class OurTrainer:
             else:
                 code_number = model.code_number
 
-            # NOTE: `code_logits` returned by GRDR.forward has shape [B, L-1, code_number]
-            # — the model's autoregressive prediction for the FIRST L-1 codes (the last
-            # position's logits live in `probability`, used for next-token generation).
-            # `prior_codes` must therefore index codes[0..L-2] from `batch['ids']`, which
-            # is laid out as [start, code0, code1, ..., code_{L-1}]. The previous slice
-            # `[:, 1:]` included the LAST code, producing a [B*L] target vs [B*(L-1), C]
-            # logits, which fails cross_entropy at L>=2 (seen at loop-1 model-2-pre,
-            # cross_entropy got input batch 512 vs target batch 1024). The corrected
-            # slice strips both the start token and the trailing code.
-            prior_codes = batch['ids'][:, 1:-1].contiguous().view(-1)
+            # Robust target derivation. `query_outputs.code_logits` is shape
+            # [B, n_pred, code_number] where n_pred = min(L, code_length) - 1 (set by
+            # grdr.py's `code_logits[:, :-1]` slice on the autoregressive predictions).
+            # batch['ids'] is [B, L] = [start, code0, code1, ...]; the model predicts
+            # batch['ids'][:, 1:1+n_pred] (each output position i predicts ids[:, i+1]).
+            # Earlier slices like `[:, 1:]` or `[:, 1:-1]` only matched specific values
+            # of L (L=code_length+1 in particular), and broke whenever save_code's
+            # `prev_code[1:] + [new_code]` chain produced a wider L. Deriving the slice
+            # from n_pred itself is the only form that holds across every loop and
+            # cascade depth. Trailing positions in batch['ids'] beyond 1+n_pred are
+            # stale codes from earlier loops and are correctly ignored by the loss.
+            n_pred = query_outputs.code_logits.size(1)
+            prior_codes = batch['ids'][:, 1:1 + n_pred].contiguous().view(-1)
             query_code_loss = F.cross_entropy(
                 query_outputs.code_logits.view(-1, code_number),
                 prior_codes
