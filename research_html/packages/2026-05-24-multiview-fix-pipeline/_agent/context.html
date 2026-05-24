@@ -16,8 +16,8 @@
 
     <section data-agent-section="canonical-paths">
       <h2>Canonical paths</h2>
-      <p>Source package: <code data-artifact="source-package">research/active/2026-05-24-multiview-fix-pipeline/</code></p>
-      <p>Runtime root: <code data-artifact="runtime-root">artifacts/research/2026-05-24-multiview-fix-pipeline/</code></p>
+      <p>Source package: <code data-field="canonical-source-path" data-artifact="source-package">research/active/2026-05-24-multiview-fix-pipeline/</code></p>
+      <p>Runtime root: <code data-field="canonical-runtime-root" data-artifact="runtime-root">artifacts/research/2026-05-24-multiview-fix-pipeline/</code></p>
       <p>HTML package: <code data-artifact="html-package">research_html/packages/2026-05-24-multiview-fix-pipeline/</code></p>
     </section>
 
@@ -25,18 +25,19 @@
       <h2>Minimum context-loading order</h2>
       <ol>
         <li>Open <a href="../index.html">index.html</a> for identity (problem, objective, motivation, paths) and the status strip.</li>
-        <li>Open <a href="../tracker.html">tracker.html</a> for Resume Block, ledger tables, and to-do list.</li>
-        <li>Open the stage page that owns the next decision (plan / implementation / launch / live / results / next-action).</li>
+        <li>Open <a href="../tracker.html">tracker.html</a> for Resume Block, directory atlas, to-do list, and chosen-route panel.</li>
+        <li>Open the stage page that owns the next decision (plan / implementation / results).</li>
         <li>Open <a href="../docs/">docs/</a> only for the specific source needed by the next decision.</li>
       </ol>
     </section>
 
     <section data-agent-section="verification-rules">
       <h2>Verification rules before changing results</h2>
-      <ul>
-        <li>Validate live runs from the runtime root above before recording results.</li>
+      <ul data-field="verification-rules">
+        <li>Validate live runs from the canonical-runtime-root above before recording results.</li>
         <li>Treat any field rendered as <code>unmeasured</code> as not yet measured; do not infer.</li>
         <li>Identity fields are owned by <a href="../index.html">index.html</a>; this pointer never re-lists them.</li>
+        <li>Next-action / chosen-route panel lives at <a href="../tracker.html#chosen-route">tracker.html#chosen-route</a> (merged from retired next-action.html per page-7 canon).</li>
       </ul>
     </section>
   </main>

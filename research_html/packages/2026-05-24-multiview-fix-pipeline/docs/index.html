@@ -11,7 +11,7 @@
 
     <header class="masthead" data-section="masthead">
       <div class="eyebrow">package docs</div>
-      <h1>Docs &mdash; Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1</h1>
+      <h1>Docs &mdash; Multi-View Training Pipeline Fix &mdash; NLT=4 should beat NLT=1</h1>
       <p class="lead">Source material that grounds the plan, implementation, runs, and results: method design, metric/dataset/runtime contracts, code anchors, audits, reviews, references.</p>
       <div class="toolbar"><a class="pill" href="../">Overview</a><a class="pill" href="../../../index.html">Dashboard</a></div>
       <header class="status-strip" data-status-strip aria-label="Package status (T2)"></header>
@@ -19,26 +19,88 @@
 
     <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
 
+    <!-- 1 group: fix-recipes (3 docs; all 1:1 with planned experiments' docsAnchor) -->
     <section data-section="docs-grid" id="docs-grid" aria-label="Source documents">
-      <h2>Source documents</h2>
-      <p class="card-text">Each fix has a dedicated design doc with four sections: <b>Challenge</b> (the specific problem this fix addresses), <b>Motivation</b> (why this fix specifically), <b>Hypothesis</b> (testable prediction tied to a cell on <a href="../plan.html#experiments">plan / experiments</a>), and <b>Code change</b> with pseudo-code. The diagnostic foundation cause is owned by the upstream package <a href="../../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html">2026-05-16-panda-pseudo-queries-multiview &sect;2.5</a>; the fix docs below cite it as the upstream evidence.</p>
-      <div class="package-grid">
-        <article class="module-card" data-card="doc-source" data-doc-card="fix-p3-allslot">
-          <h3 data-field="doc-title">Fix P3 &mdash; All-slot CE supervision <span class="pill" style="background:#ecf5ec;color:#2a4a30;">foundation fix</span></h3>
-          <p class="card-text" data-field="doc-summary">Remove <code>select(token_idx)</code> from the train_step; supervise every slot of the multi-view encoder under CE/code loss. The only fix that addresses the foundation cause directly. P3 is the <b>backbone</b> of F2 — it is never run standalone (the F1 "P3 alone" cell was dropped because the 4 MLPs predictably collapse to the same function without view-diversification constraints).</p>
-          <p class="card-text"><a href="fix_p3_allslot_ce.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F2</a> (bundled with view diversification) &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+      <p class="card-text">1 group covering 3 doc files (fix-recipes). Each card maps 1:1 to a planned experiment's <code>docsAnchor</code> field in inventory.</p>
+
+      <section class="docs-group"
+               data-doc-group="fix-recipes"
+               data-doc-group-kind="methods"
+               data-doc-group-rationale="3 docs, one per fix specification (P3 all-slot CE / view-diversification / P1 control); reader expects per-fix drill-down before opening any implementation work">
+
+        <h2>Fix recipes</h2>
+
+        <!-- Card 1: P3 all-slot CE -->
+        <article class="module-card doc-card"
+                 data-doc-id="fix-p3-allslot-ce"
+                 data-doc-group="fix-recipes"
+                 data-doc-topics="training fix all-slot ce supervision"
+                 data-doc-related-pages="plan.html#objective-contract implementation.html#changes results.html#gate"
+                 data-doc-cited-by-tasks="F2">
+          <h3>P3 &mdash; All-Slot CE Supervision (the foundation fix) <time class="doc-updated">2026-05-24</time></h3>
+          <p class="doc-tldr">Removes <code>select(token_idx)</code> reduction so all N slots get CE gradient; the backbone of cell F2 &mdash; never run standalone (F1 dropped).</p>
+          <div class="doc-tags">
+            <span class="chip doc-tag">training</span>
+            <span class="chip doc-tag">fix</span>
+            <span class="chip doc-tag">all-slot-ce</span>
+            <span class="chip doc-tag">supervision</span>
+          </div>
+          <details class="doc-preview">
+            <summary>preview &middot; <a href="fix_p3_allslot_ce.html">Open full &rarr;</a></summary>
+            <p class="doc-preview-body">Remove <code>select(token_idx)</code> from the train_step; supervise every slot of the multi-view encoder under CE/code loss. The only fix that directly addresses the foundation cause identified in diagnostic &sect;2.5. P3 is the <b>backbone</b> of F2 (P3 + view diversification); it is never run standalone (the F1 "P3 alone" cell was dropped because the 4 MLPs predictably collapse to the same function without view-diversification constraints).</p>
+            <p class="doc-related"><b>Related pages:</b> <a href="../plan.html#objective-contract"><code>plan.html#objective-contract</code></a> &middot; <a href="../implementation.html#changes"><code>implementation.html#changes</code></a> &middot; <a href="../results.html#gate"><code>results.html#gate</code></a></p>
+            <p class="doc-cited-by"><b>Cited by tasks:</b> <code>F2</code></p>
+          </details>
         </article>
-        <article class="module-card" data-card="doc-source" data-doc-card="fix-view-div">
-          <h3 data-field="doc-title">View diversification <span class="pill" style="background:#ecf5ec;color:#2a4a30;">secondary fix</span></h3>
-          <p class="card-text" data-field="doc-summary">Make the 4 slots learn distinct views via three training-signal mechanisms: (a) caption-conditioned soft-weighted CE via token_idx, (b) inter-slot orthogonality regularizer, (c) per-slot k-means init at step 0 only. The 4096 codebook stays shared — same view content keeps mapping to same centroid. Bundled with P3 in F2.</p>
-          <p class="card-text"><a href="fix_view_diversification.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F2</a> &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+
+        <!-- Card 2: View diversification -->
+        <article class="module-card doc-card"
+                 data-doc-id="fix-view-diversification"
+                 data-doc-group="fix-recipes"
+                 data-doc-topics="training fix view-diversification orthogonality soft-weighted-ce kmeans-init"
+                 data-doc-related-pages="plan.html#objective-contract implementation.html#changes results.html#gate"
+                 data-doc-cited-by-tasks="F2 S">
+          <h3>View Diversification &mdash; training-signal driven <time class="doc-updated">2026-05-24</time></h3>
+          <p class="doc-tldr">Three mechanisms (soft-weighted CE, inter-slot orthogonality regularizer, per-slot k-means init) make 4 slots learn distinct views without partitioning the shared 4096 codebook.</p>
+          <div class="doc-tags">
+            <span class="chip doc-tag">training</span>
+            <span class="chip doc-tag">fix</span>
+            <span class="chip doc-tag">view-diversification</span>
+            <span class="chip doc-tag">orthogonality</span>
+            <span class="chip doc-tag">kmeans-init</span>
+          </div>
+          <details class="doc-preview">
+            <summary>preview &middot; <a href="fix_view_diversification.html">Open full &rarr;</a></summary>
+            <p class="doc-preview-body">P3 alone supervises all N slots but does not guarantee they learn <em>different</em> things; the optimizer can collapse all N MLPs to the same function. This fix adds three training-signal mechanisms without partitioning the codebook: (a) caption-conditioned soft-weighted CE via token_idx, (b) inter-slot orthogonality regularizer, (c) per-slot k-means init at step 0 only. The 4096 codebook stays shared &mdash; same view content keeps mapping to same centroid. Bundled with P3 in F2; S cell ablates each mechanism independently.</p>
+            <p class="doc-related"><b>Related pages:</b> <a href="../plan.html#objective-contract"><code>plan.html#objective-contract</code></a> &middot; <a href="../implementation.html#changes"><code>implementation.html#changes</code></a> &middot; <a href="../results.html#gate"><code>results.html#gate</code></a></p>
+            <p class="doc-cited-by"><b>Cited by tasks:</b> <code>F2</code> <code>S</code></p>
+          </details>
         </article>
-        <article class="module-card" data-card="doc-source" data-doc-card="fix-p1-shared-tokidx">
-          <h3 data-field="doc-title">Fix P1 &mdash; Shared <code>token_idx</code> across pseudo siblings <span class="pill" style="background:#fbecea;color:#7a2620;">control</span></h3>
-          <p class="card-text" data-field="doc-summary">Cheap-fix control variant: pseudo siblings inherit real-caption <code>token_idx</code>. Predicted to underperform P3 because it leaves the foundation cause intact. Run as the H3-falsification cell; without it, a reviewer can ask "did you actually need the foundation fix?"</p>
-          <p class="card-text"><a href="fix_p1_shared_token_idx.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F3</a> &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+
+        <!-- Card 3: P1 shared token_idx (design reference, cell dropped) -->
+        <article class="module-card doc-card"
+                 data-doc-id="fix-p1-shared-token-idx"
+                 data-doc-group="fix-recipes"
+                 data-doc-topics="training fix control cell-dropped token-idx pseudo-captions"
+                 data-doc-related-pages="plan.html#objective-contract implementation.html#changes"
+                 data-doc-cited-by-tasks="">
+          <h3>P1 &mdash; Shared <code>token_idx</code> Across Pseudo Siblings (control) <time class="doc-updated">2026-05-24</time></h3>
+          <p class="doc-tldr">Design reference for the P1 control argument (F3 cell dropped 2026-05-24); retained for paper rebuttal explaining why the data-side fix alone is structurally insufficient.</p>
+          <div class="doc-tags">
+            <span class="chip doc-tag">control</span>
+            <span class="chip doc-tag">cell-dropped</span>
+            <span class="chip doc-tag">token-idx</span>
+            <span class="chip doc-tag">pseudo-captions</span>
+          </div>
+          <details class="doc-preview">
+            <summary>preview &middot; <a href="fix_p1_shared_token_idx.html">Open full &rarr;</a></summary>
+            <p class="doc-preview-body">F3 cell was scoped, planned, and then dropped after realizing that on Panda this configuration is structurally guaranteed to degenerate to "NLT=1 + 3 dormant MLPs" (per-video real-caption k-means short-circuits at k=1 when num_real_texts=1 &rarr; all rows get token_idx=0). No implementation. This doc is retained as the design-rationale reference for H1's loss-side-fix-necessity claim; H1 is supported instead by diagnostic &sect;2.5 truth-table row 3 + archived MSR-VTT E2.4F.1 cross-dataset evidence.</p>
+            <p class="doc-related"><b>Related pages:</b> <a href="../plan.html#objective-contract"><code>plan.html#objective-contract</code></a> &middot; <a href="../implementation.html#changes"><code>implementation.html#changes</code></a></p>
+            <p class="doc-cited-by"><b>Cited by tasks:</b> (none &mdash; reference only)</p>
+          </details>
         </article>
-      </div>
+
+      </section><!-- end docs-group fix-recipes -->
     </section>
 
     <footer class="footer-note">
