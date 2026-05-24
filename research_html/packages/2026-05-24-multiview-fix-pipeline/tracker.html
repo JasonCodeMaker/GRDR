@@ -27,13 +27,14 @@
           <h2>To-do</h2>
           <p class="card-text">Each item links to the page that owns the action. Strict format: every &lt;li&gt; wraps its content in &lt;label&gt;&lt;input type="checkbox"&gt; ...&lt;/label&gt;; add the checked attribute when the item is done.</p>
           <ul class="todo-checklist" data-field="todo-list">
-            <li><label><input type="checkbox"> P0: build Panda 500K subset + smoke-test all-slot CE + view-diversification flags &mdash; <a href="plan.html#experiments">plan / P0</a></label></li>
+            <li><label><input type="checkbox"> P0: build Panda 500K subset + smoke-test all-slot CE + view-diversification + K1 codebook-seed-all-slots flags &mdash; <a href="plan.html#experiments">plan / P0</a></label></li>
             <li><label><input type="checkbox"> B1: train NLT=1 no-pseudo baseline (becomes gate value for F2) &mdash; <a href="plan.html#experiments">plan / B1</a></label></li>
             <li><label><input type="checkbox"> B2: train NLT=1 + pseudo sanity baseline &mdash; <a href="plan.html#experiments">plan / B2</a></label></li>
             <li><label><input type="checkbox"> B3: reproduce NLT=4+pseudo collapse on 500K subset &mdash; <a href="plan.html#experiments">plan / B3</a></label></li>
             <li><label><input type="checkbox"> F2: train P3 + view-diversification bundle (primary fix, Bunya) &mdash; <a href="plan.html#experiments">plan / F2</a></label></li>
+            <li><label><input type="checkbox"> K1: train F2 + K-means inheritance fix (--codebook_seed_all_slots) on 500K &mdash; <a href="plan.html#experiments">plan / K1</a></label></li>
             <li><label><input type="checkbox"> S: screen view-div mechanism ablation single-loop sweeps &mdash; <a href="plan.html#experiments">plan / S</a></label></li>
-            <li><label><input type="checkbox"> V: train winning F2 config at full 2.15M scale seed s42 (Bunya) &mdash; <a href="plan.html#experiments">plan / V</a></label></li>
+            <li><label><input type="checkbox"> V: train K1-vs-F2 winning recipe at full 2.15M scale seed s42 (Bunya) &mdash; <a href="plan.html#experiments">plan / V</a></label></li>
             <li><label><input type="checkbox"> Fill result-gate rows in <a href="results.html#gate">results.html#gate</a> as each cell completes</label></li>
             <li><label><input type="checkbox"> Confirm T1 ack at <a href="#chosen-route">chosen-route panel</a> before P0 launches</label></li>
           </ul>
@@ -106,6 +107,19 @@
                 <dt>outputs</dt><dd><code>var/research/2026-05-24-multiview-fix-pipeline/output/.../f2_p3_view_div/model-3-fit/best_model.pt</code></dd>
                 <dt>ckpts</dt><dd>(in outputs)</dd>
                 <dt>launcher</dt><dd><code>scripts/F2_train_p3_view_div.sh</code> (Bunya interactive salloc)</dd>
+              </dl>
+            </div>
+          </section>
+
+          <section class="phase-group" data-phase="K1">
+            <h3>K1 &mdash; F2 + K-means inheritance fix (local A6000)</h3>
+            <div class="exp-block" data-exp-id="K1" data-state="pending">
+              <dl class="path-lines">
+                <dt>runtime root</dt><dd><code>var/research/2026-05-24-multiview-fix-pipeline/</code></dd>
+                <dt>logs</dt><dd><code>var/research/2026-05-24-multiview-fix-pipeline/logs/k1_f2_kmeans_allslots.log</code></dd>
+                <dt>outputs</dt><dd><code>var/research/2026-05-24-multiview-fix-pipeline/output/.../k1_f2_kmeans_allslots/model-3-fit/best_model.pt</code></dd>
+                <dt>ckpts</dt><dd>(in outputs &mdash; gate: CanHit@100(K1) &gt; CanHit@100(F2) by &ge; 1.0 pp)</dd>
+                <dt>launcher</dt><dd><code>scripts/K1_train_f2_kmeans_allslots.sh</code> (local A6000; F2 flags + <code>--codebook_seed_all_slots</code>)</dd>
               </dl>
             </div>
           </section>
@@ -184,10 +198,10 @@
         <article class="module-card" data-card="chosen-route" data-ack="lane-transition" data-ack-value="">
           <h2>Chosen route + lane-transition ack (T24 + T1)</h2>
           <div class="kv-grid">
-            <div class="k">Route</div><div data-route data-field="chosen-route">run_next_experiment_from_step4 &mdash; Build Panda 500K subset (P0): scripts/build_500k_subset.py draws 500K video_ids from 2.15M source + slices matching pseudo addition JSON + pickle. Then smoke-test code changes (P3 all-slot CE flag, view-diversification flags: soft-weighted CE / orthogonality / per-slot init, shared-token_idx flag) on 100-video subset.</div>
-            <div class="k">Reason (one sentence)</div><div data-field="chosen-route-reason">P0 is the dependency root for every other cell &mdash; without the 500K subset + working CLI flags, no B1/B2/B3 baseline can launch on Day 1; smoke-test on 100 videos validates the code changes before committing 10h of full-chain wall.</div>
+            <div class="k">Route</div><div data-route data-field="chosen-route">run_next_experiment_from_step4 &mdash; Build Panda 500K subset (P0): scripts/build_500k_subset.py draws 500K video_ids from 2.15M source + slices matching pseudo addition JSON + pickle. Then smoke-test code changes (P3 all-slot CE flag, view-diversification flags: soft-weighted CE / orthogonality / per-slot init, K1 <code>--codebook_seed_all_slots</code> flag) on 100-video subset.</div>
+            <div class="k">Reason (one sentence)</div><div data-field="chosen-route-reason">P0 is the dependency root for every other cell &mdash; without the 500K subset + working CLI flags, no B1/B2/B3/F2/K1 cell can launch; smoke-test on 100 videos validates the 6 model-side flags (including the new K1 do_epoch_encode branch) before committing 10h+ of full-chain wall.</div>
             <div class="k">Evidence path</div><code data-artifact="chosen-route-evidence">packages/2026-05-24-multiview-fix-pipeline/plan.html#experiments &mdash; P0 row, after=[]</code>
-            <div class="k">User ack (T1)</div><div data-field="user-ack">pending &mdash; need ack on subset draw seed (s42 proposed), smoke-test scope (100 vids x 4 captions), and GPU 0 vs GPU 1 assignment given workstation occupancy by prior s3407 chain</div>
+            <div class="k">User ack (T1)</div><div data-field="user-ack">pending &mdash; need ack on subset draw seed (s42 proposed), smoke-test scope (100 vids x 4 captions, all 6 model flags including K1's <code>--codebook_seed_all_slots</code>), and GPU 0 vs GPU 1 assignment given workstation occupancy by prior s3407 chain</div>
           </div>
           <p class="card-text">T1: do not move into a terminal lane without recorded user ack here. Read by <code>learnings_lint.py draft-terminal</code> to draft the E3 terminal block.</p>
         </article>
@@ -253,6 +267,8 @@
           <table class="data-table" data-table="implementation-review">
             <thead><tr><th>Change ID</th><th>Purpose</th><th>Unit</th><th>Owned files</th><th>Scope</th><th>No-change boundary</th><th>Reviewer verdict</th><th>Finding class</th><th>Required fix</th><th>Main decision</th><th>Style/Minimal</th><th>Complexity</th><th>Out-of-scope</th><th>Validation</th><th>Integration</th></tr></thead>
             <tbody data-table-body="implementation-review">
+      <tr><td>MV-FIX-1-rev1</td><td>Fix 5 reviewer-blocking findings consolidated brief</td><td>single impl owner (fix pass)</td><td>trainer/trainer.py (split slot_ortho_loss key) + scripts/build_500k_subset.py (drop set cast) + scripts/_subset_swap.sh (refcount+flock) + run.py (--wandb_project/--wandb_run_name flags) + scripts/B1-V launchers + scripts/_screen_runner.py (thread wandb flags) + scripts/F2,V (Bunya conda branch)</td><td>Fix only; no scope expansion</td><td>all in-scope files only; xpool pre-existing drift NOT impl-owner edits, handled separately at commit time</td><td>in_flight</td><td>consolidated-fix</td><td>5 blocking + bundle non-blockings</td><td>All 5 blocking findings accepted; R1-Q (cl_loss slot-mean) resolved as decision owner — accept slot-mean aggregation; R1-NB (owned-files honesty for rq/videorqvae/model_utils) accepted as plumbing-extension and added to owned-files; xpool drift handled at commit time via selective git add</td><td>expected: surgical fix, no scope creep</td><td>expected: under 30 min, ~40-60 LOC delta</td><td>expected: encoder + test() eval + xpool + utils/data_utils preserved</td><td>(a) smoke 5/5 still PASS; (b) build_500k_subset.py determinism: 2 runs of --n 100 --seed 42 produce identical sentinels; (c) DRY_RUN dispatch all 7 launchers print expected wandb args; (d) run.py --help shows new --wandb_project + --wandb_run_name</td><td>pending</td></tr>
+      <tr><td>MV-FIX-1</td><td>Multi-view fix pipeline: P3 all-slot CE + F2 view-div bundle + K1 codebook seed all slots</td><td>single implementation owner (Agent a21ca3da4b9f2705a)</td><td>models/grdr.py + trainer/trainer.py + models/video_rqvae/vq.py + trainer/evaluator.py + run.py + 9 new scripts under research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/</td><td>6 CLI flags all default OFF; existing NLT=1 anchor recipe unchanged</td><td>models/video_rqvae/encoder.py + trainer/evaluator.py:test() + reranker/xpool/* + data/video_dataset.py base + utils/data_utils.py</td><td>in_flight</td><td>in_flight</td><td>n/a (pre-review)</td><td>Step 2 dispatched 2026-05-25 single owner background agent; validation = imports OK + --help shows 6 flags + smoke test 100 vids passes</td><td>expected: surgical, no refactors, match local style</td><td>expected: ~150-200 LOC code + ~80 LOC subset builder + 8 launchers</td><td>expected: encoder + test() eval + xpool + utils/data_utils preserved</td><td>python -c import + run.py --help grep + smoke test 100 vids 1 epoch no pretrain/fit on GPU 0</td><td>pending</td></tr>
               <tr><td data-field="change-id"><a href="implementation.html">unmeasured</a></td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td data-decision>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td><td>unmeasured</td></tr>
             </tbody>
           </table>
@@ -302,7 +318,7 @@
     </details><!-- end data-audience="agent" -->
 
     <footer class="footer-note">
-      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (launch-readiness gained R-LOG wandb ack + R-BUNYA-24H interactive-allocation ack rows; mirrors plan / run conventions)</time>
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (K1 cell added — K-means inheritance fix stacked on F2; new directory-atlas K1 block; todo + chosen-route smoke-test scope extended to include <code>--codebook_seed_all_slots</code> flag; V todo retitled "K1-vs-F2 winning recipe at 2.15M")</time>
     </footer>
   </div>
 

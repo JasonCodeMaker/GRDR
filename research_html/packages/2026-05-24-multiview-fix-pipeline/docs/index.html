@@ -19,9 +19,9 @@
 
     <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
 
-    <!-- 1 group: fix-recipes (3 docs; all 1:1 with planned experiments' docsAnchor) -->
+    <!-- 1 group: fix-recipes (4 docs; F2/K1 1:1 with planned experiments' docsAnchor; P3 backbone + P1 control are non-cell references) -->
     <section data-section="docs-grid" id="docs-grid" aria-label="Source documents">
-      <p class="card-text">1 group covering 3 doc files (fix-recipes). Each card maps 1:1 to a planned experiment's <code>docsAnchor</code> field in inventory.</p>
+      <p class="card-text">1 group covering 4 doc files (fix-recipes): P3 all-slot CE (foundation backbone of F2), view diversification (F2's <code>docsAnchor</code>), K-means inheritance fix (K1's <code>docsAnchor</code>, stacked on F2), and P1 shared token_idx (cell-dropped design reference).</p>
 
       <section class="docs-group"
                data-doc-group="fix-recipes"
@@ -77,7 +77,31 @@
           </details>
         </article>
 
-        <!-- Card 3: P1 shared token_idx (design reference, cell dropped) -->
+        <!-- Card 3: K-means inheritance fix (K1, stacked on F2) -->
+        <article class="module-card doc-card"
+                 data-doc-id="fix-k2-kmeans-inheritance"
+                 data-doc-group="fix-recipes"
+                 data-doc-topics="training fix kmeans codebook-seed do-epoch-encode select-token-idx loop-boundary dedup-by-video"
+                 data-doc-related-pages="plan.html#objective-contract implementation.html#changes results.html#gate"
+                 data-doc-cited-by-tasks="K1 V">
+          <h3>K-means Inheritance Fix &mdash; loop-boundary codebook seed sees all N slots <time class="doc-updated">2026-05-24</time></h3>
+          <p class="doc-tldr">Flips <code>do_epoch_encode</code> to dedup-by-video + <code>return_all=True</code> so the faiss-GPU k-means at every loop boundary sees explicit per-slot signal &mdash; not the <code>select(token_idx)</code>-reduced subset. Stacked on F2 in cell K1.</p>
+          <div class="doc-tags">
+            <span class="chip doc-tag">training</span>
+            <span class="chip doc-tag">fix</span>
+            <span class="chip doc-tag">codebook-seed</span>
+            <span class="chip doc-tag">kmeans</span>
+            <span class="chip doc-tag">dedup-by-video</span>
+          </div>
+          <details class="doc-preview">
+            <summary>preview &middot; <a href="fix_k2_kmeans_inheritance.html">Open full &rarr;</a></summary>
+            <p class="doc-preview-body">The <code>select(token_idx)</code> reduction at <code>models/grdr.py:209-211</code> has <em>two</em> downstream consequences. F2's bundle addresses consequence A (train-step CE only supervises one slot). Consequence B is still live: <code>do_epoch_encode</code> at every loop boundary <em>also</em> goes through the same select-reduced path when seeding the next loop's codebook. K1 carries explicit per-slot signal into the codebook seed by switching <code>our_encode_dual</code> to dedup-by-video + <code>return_all=True</code>; faiss-GPU k-means then runs on <code>[num_videos &times; N, D]</code> instead of <code>[num_text_samples, D]</code>. Memory peak drops 22 GB &rarr; 17.6 GB; encoder forward calls drop 5&times; (per-video instead of per-text). H3 gate = K1 &gt; F2 by &ge; 1.0 CanHit@100 pp at 500K.</p>
+            <p class="doc-related"><b>Related pages:</b> <a href="../plan.html#objective-contract"><code>plan.html#objective-contract</code></a> &middot; <a href="../implementation.html#changes"><code>implementation.html#changes</code></a> &middot; <a href="../results.html#gate"><code>results.html#gate</code></a></p>
+            <p class="doc-cited-by"><b>Cited by tasks:</b> <code>K1</code> <code>V</code> (winning recipe)</p>
+          </details>
+        </article>
+
+        <!-- Card 4: P1 shared token_idx (design reference, cell dropped) -->
         <article class="module-card doc-card"
                  data-doc-id="fix-p1-shared-token-idx"
                  data-doc-group="fix-recipes"
@@ -104,7 +128,7 @@
     </section>
 
     <footer class="footer-note">
-      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (K-means inheritance fix card added — K1 cell, stacked on F2; doc-grid now has 4 cards: P3 backbone, view diversification (F2), K-means inheritance (K1), P1 control)</time>
     </footer>
   </div>
 

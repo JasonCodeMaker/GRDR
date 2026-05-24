@@ -26,7 +26,7 @@
       <section data-section="hypothesis-restated" id="hypothesis-restated" aria-label="Hypothesis re-stated (T8)">
         <article class="module-card" data-card="hypothesis-restated">
           <h2>Hypothesis (re-stated for transition, T8)</h2>
-          <p data-hypothesis-restated data-field="hypothesis-text"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training &mdash; supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic &sect;2.5</a> + archived MSR-VTT E2.4F.1 (no F3 cell). <b>H2 (primary gate)</b>: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H2-scale</b>: same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) &mdash; V cell.</p>
+          <p data-hypothesis-restated data-field="hypothesis-text"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training &mdash; supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic &sect;2.5</a> + archived MSR-VTT E2.4F.1 (no F3 cell). <b>H2 (primary gate)</b>: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H3 (K1 stacked-fix gate)</b>: explicit per-slot k-means seed at every loop boundary (<code>--codebook_seed_all_slots</code>: dedup-by-video + <code>return_all=True</code> in <code>do_epoch_encode</code>) outperforms F2 alone by &ge; 1.0 CanHit@100 pp at 500K, because consequence B of <code>select(token_idx)</code> carries non-trivial signal loss that F2's train-step fixes do not recover. <b>H2-scale</b>: K1-vs-F2 winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) &mdash; V cell.</p>
         </article>
       </section>
 
@@ -109,6 +109,18 @@
                 <td data-field="reason">unmeasured</td>
               </tr>
               <tr data-ack="result-pass" data-ack-value="">
+                <td data-field="exp-id">K1</td>
+                <td data-validity="missing">missing</td>
+                <td data-field="baseline">F2 CanHit@100</td>
+                <td data-field="plan-gate">CanHit@100(K1) &gt; CanHit@100(F2) by &ge; 1.0 pp (H3 stacked-fix gate)</td>
+                <td data-field="observed-metric">unmeasured</td>
+                <td data-field="budget-use">unmeasured</td>
+                <td data-field="seed-status">s42</td>
+                <td data-field="artifact-completeness">unmeasured</td>
+                <td data-decision data-field="verdict">unmeasured</td>
+                <td data-field="reason">unmeasured</td>
+              </tr>
+              <tr data-ack="result-pass" data-ack-value="">
                 <td data-field="exp-id">S</td>
                 <td data-validity="missing">missing</td>
                 <td data-field="baseline">F2 CanHit@100</td>
@@ -144,7 +156,7 @@
             <span class="chip" data-validity="valid">valid 0</span>
             <span class="chip" data-validity="diagnostic_only">diagnostic_only 0</span>
             <span class="chip" data-validity="failed">failed 0</span>
-            <span class="chip" data-validity="missing">missing 7</span>
+            <span class="chip" data-validity="missing">missing 8</span>
           </p>
         </article>
 
@@ -161,7 +173,7 @@
     </details><!-- end data-audience="agent" -->
 
     <footer class="footer-note">
-      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (K1 row added; missing count 7→8; hypothesis re-stated to include H3)</time>
     </footer>
   </div>
 

@@ -124,10 +124,10 @@
           <tbody>
             <tr>
               <td class="center mono"><b>H1</b></td>
-              <td>The loss-side fix (P3 backbone + view diversification) is <em>necessary</em> &mdash; data-side fix (P1) alone, which leaves <code>select(token_idx)</code> intact, cannot recover the multi-view advantage</td>
-              <td class="mono">F3 (P1 alone, no P3) vs F2 (P3 + view diversification)</td>
-              <td class="mono">F2 CanHit@100 &gt; F3 by &gt; <b>5 pp</b>, with F3 &asymp; B1 (within &plusmn;2 pp). Confirms that flipping <code>select(token_idx)</code> off is what produces the multi-view win, not just removing per-row routing variance.</td>
-              <td class="mono">F2 &asymp; F3; H1 falsified &rarr; per-row token_idx variance was the dominant trigger after all; P3 + view-div added complexity didn't matter. Reframe to "data-pipeline-only fix" recipe.</td>
+              <td>The loss-side fix (P3 backbone + view diversification) is <em>necessary</em>. Theoretical support &mdash; no F3 cell run.</td>
+              <td class="mono">Supported by <a href="../../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5 truth-table row 3</a> + archived MSR-VTT E2.4F.1 (no-pseudo NLT&gt;1 collapsed to train/test unique sIDs 11/8). See <a href="fix_p1_shared_token_idx.html">P1 reference doc</a> for the full control argument.</td>
+              <td class="mono">F2 wins primary gate (CanHit@100 &gt; B1) using the loss-side bundle, while the theoretical analysis shows P1 alone would only have produced 3 dormant MLPs. Combined: the design choice to invest in loss-side fix is empirically and theoretically supported.</td>
+              <td class="mono">If a follow-up package ever runs F3 (P1 alone @ 500K, ~10 h workstation) and finds F3 &asymp; F2, H1 is falsified retroactively — the loss-side complexity was unnecessary. Considered unlikely.</td>
             </tr>
             <tr>
               <td class="center mono">H2</td>
@@ -179,7 +179,7 @@
             rq_loss            = rq_loss,
         )
 
-    <span class="c"># ─── OLD PATH (preserved for NLT=1 / B1, B2 / and as the F3 P1 fallback) ───</span>
+    <span class="c"># ─── OLD PATH (preserved for NLT=1 / B1, B2 baselines) ───</span>
     selected_encoded_features  = video_encoded_features[batch_indices, token_idx]
     selected_quantized_features = video_quantized_features[batch_indices, token_idx]
     selected_indices           = indices[batch_indices, token_idx]
@@ -238,7 +238,7 @@
                 prior_codes.reshape(-1),
             )
             code_loss = code_loss + query_code_loss
-    <span class="k">else</span>:                                                  <span class="c"># ─── OLD BRANCH (B1, B2, B3, F3) ───</span>
+    <span class="k">else</span>:                                                  <span class="c"># ─── OLD BRANCH (B1, B2, B3 baselines) ───</span>
         ce_loss = F.cross_entropy(query_outputs.probability,
                                   vid_outputs.discrete_codes.detach(),
                                   label_smoothing=0.1)
@@ -288,7 +288,7 @@ python run.py \
 
         <div class="callout ok">
           <span class="tag">success criterion for this fix in isolation</span>
-          P3 is validated indirectly via the F2 cell (P3 + view diversification). F2 passes when its model-3-fit CanHit@100 (single seed, full 3-loop chain on Panda 500K subset, beam=100 candidate export) is strictly greater than B1 CanHit@100 by at least 1 pp, AND the view-diversification diagnostics are in healthy ranges (see <a href="fix_view_diversification.html#code-change">view diversification §4.6</a>). P3's necessity is established by F3 (P1 alone) underperforming F2 by &gt; 5 pp — confirming that the data-only fix is insufficient.
+          P3 is validated indirectly via the F2 cell (P3 + view diversification). F2 passes when its model-3-fit CanHit@100 (single seed, full 3-loop chain on Panda 500K subset, beam=100 candidate export) is strictly greater than B1 CanHit@100 by at least 1 pp, AND the view-diversification diagnostics are in healthy ranges (see <a href="fix_view_diversification.html#code-change">view diversification §4.6</a>). P3's necessity is supported theoretically by the <a href="../../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5 truth-table row 3</a> + archived MSR-VTT E2.4F.1 cross-dataset evidence; the F3 (P1 alone) cell is not run because its outcome is structurally predicted (degenerates to NLT=1 + 3 dormant MLPs).
         </div>
       </article>
     </section>

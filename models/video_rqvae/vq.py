@@ -8,7 +8,8 @@ class VectorQuantizer(nn.Module):
 
     def __init__(self, n_e, e_dim,
                  beta = 0.55, kmeans_init = False, kmeans_iters = 10,
-                 sk_epsilon=0.01, sk_iters=100, use_linear=0):
+                 sk_epsilon=0.01, sk_iters=100, use_linear=0,
+                 per_slot_init=False, num_latent_tokens=1):
         super().__init__()
         self.n_e = n_e
         self.e_dim = e_dim
@@ -18,6 +19,8 @@ class VectorQuantizer(nn.Module):
         self.sk_epsilon = sk_epsilon
         self.sk_iters = sk_iters
         self.use_linear = use_linear
+        self.per_slot_init = per_slot_init
+        self.num_latent_tokens = num_latent_tokens
 
         self.embedding = nn.Embedding(self.n_e, self.e_dim)
         if not kmeans_init:
@@ -43,12 +46,27 @@ class VectorQuantizer(nn.Module):
         return z_q
 
     def init_emb(self, data):
-
-        centers = kmeans(
-            data,
-            self.n_e,
-            self.kmeans_iters,
-        )
+        # F2 mech (c): when per_slot_init=True, run N independent k-means each on
+        # B samples with n_e/N centroids and concatenate into the shared codebook.
+        if self.per_slot_init and self.num_latent_tokens > 1:
+            BN, D = data.shape
+            N = self.num_latent_tokens
+            assert BN % N == 0, f"data {BN} not divisible by num_latent_tokens {N}"
+            assert self.n_e % N == 0, f"n_e={self.n_e} not divisible by num_latent_tokens={N} for per-slot init"
+            B = BN // N
+            slot_k = self.n_e // N
+            # data layout from RQ is reshape of [B, N, D] then view(-1, D): row order is per-row slot-major.
+            data_per_slot = data.view(B, N, D).permute(1, 0, 2).contiguous()
+            per_slot_centers = []
+            for t in range(N):
+                per_slot_centers.append(kmeans(data_per_slot[t], slot_k, self.kmeans_iters))
+            centers = torch.cat(per_slot_centers, dim=0)
+        else:
+            centers = kmeans(
+                data,
+                self.n_e,
+                self.kmeans_iters,
+            )
 
         self.embedding.weight.data.copy_(centers)
         self.initted = True

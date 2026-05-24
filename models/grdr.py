@@ -148,7 +148,8 @@ class GRDR(nn.Module, GenerationMixin, ABC):
 
     def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None, aux_ids=None,
                 video_features=None, token_idx=None, return_code=False, return_quantized_embedding=False,
-                use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False, **kwargs):
+                use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False,
+                return_all_slots=False, **kwargs):
         """
         Dual-path forward:
         - Query path (input_ids provided): Use T5 encoder -> project to code space
@@ -158,7 +159,8 @@ class GRDR(nn.Module, GenerationMixin, ABC):
 
         # Video path: video features -> VideoRQVAE
         if video_features is not None:
-            return self._forward_video(video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer, return_all)
+            # P3/K1 alias: return_all_slots is the trainer-facing name; reuse return_all branch.
+            return self._forward_video(video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer, return_all or return_all_slots)
 
         # Query path: text tokens -> T5 encoder -> code projection
         # Also handles encoder_outputs (from beam search subsequent steps)
@@ -185,18 +187,36 @@ class GRDR(nn.Module, GenerationMixin, ABC):
             video_encoded_features, use_sk=use_constraint, return_probs=True
         )
 
-        # If return_all, skip token selection and return all latent tokens
+        # If return_all, skip token selection and return all latent tokens.
+        # P3 (multiview_all_slot_ce) + K1 (codebook_seed_all_slots) require per-slot
+        # discrete_codes / probability / code_logits, so compute them here from the
+        # full `distances` tensor list (each entry is [B, N, code_number]).
         if return_all:
             video_decoded_features, reconstructed_features = self.video_rqvae.decoder(video_quantized_features)
 
+            scale = self.logit_scale.exp().clamp(min=20.0, max=100.0)
+            all_layer_logits = [(1 - layer_d / 2) * scale for layer_d in distances]
+            # Stack into [B, N, L, code_number]
+            all_code_logits = torch.stack(all_layer_logits, dim=2)
+            probability = all_code_logits[:, :, -1, :].contiguous()  # [B, N, code_number]
+            discrete_codes = indices[:, :, -1].contiguous()  # [B, N]
+            if all_code_logits.size(2) == 1:
+                return_code_logits = None
+            else:
+                return_code_logits = all_code_logits[:, :, :-1, :].contiguous()  # [B, N, L-1, code_number]
+
             return VideoOutput(
+                # `logits` is the L=code_length route layout used by route-aware
+                # losses; in the return_all path callers consume `code_logits`
+                # directly, and no downstream code reads `logits` here. Setting
+                # to None mirrors the QuantizeOutput contract.
                 logits=None,
                 continuous_embeds=video_encoded_features,
                 quantized_embeds=video_quantized_features,
                 reconstructed_features=reconstructed_features,
-                discrete_codes=None,
-                probability=None,
-                code_logits=None,
+                discrete_codes=discrete_codes,
+                probability=probability,
+                code_logits=return_code_logits,
                 rq_loss=rq_loss,
             )
 

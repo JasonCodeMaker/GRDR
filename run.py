@@ -105,6 +105,23 @@ def parse_args():
     parser.add_argument('--num_latent_tokens', type=int, default=4,
                        help='Number of latent tokens in VideoRQVAE')
 
+    # Multi-view fix pipeline flags (research_html/packages/2026-05-24-multiview-fix-pipeline)
+    parser.add_argument('--multiview_all_slot_ce', action='store_true', default=False,
+                       help='P3 fix: supervise every slot of the multi-view encoder under CE '
+                            '(see docs/fix_p3_allslot_ce.html)')
+    parser.add_argument('--view_div_high_weight', type=float, default=0.0,
+                       help='F2 mech (a): CE weight on token_idx-routed slot. F2 default 0.7; '
+                            '0.0 disables soft routing (P3 uniform 1/N).')
+    parser.add_argument('--view_div_low_weight', type=float, default=0.0,
+                       help='F2 mech (a): CE weight on non-routed slots (sum). F2 default 0.1.')
+    parser.add_argument('--slot_orthogonality_weight', type=float, default=0.0,
+                       help='F2 mech (b): inter-slot orthogonality regularizer lambda. F2 default 0.1.')
+    parser.add_argument('--per_slot_init', action='store_true', default=False,
+                       help='F2 mech (c): N independent k-means at step 0; codebook stays SHARED.')
+    parser.add_argument('--codebook_seed_all_slots', action='store_true', default=False,
+                       help='K1: at every loop boundary, run faiss-GPU k-means on '
+                            '[num_videos x N, D] features (dedup + return_all).')
+
     # Evaluation arguments
     parser.add_argument('--eval', action='store_true', default=False, help='Evaluate the model')
     parser.add_argument('--eval_checkpoint', type=str,
@@ -153,6 +170,10 @@ def parse_args():
                        help='GPU device ID to use for training (0 or 1)')
     parser.add_argument('--use_pseudo_queries', action='store_true', default=False,
                        help='Include pseudo queries in training data')
+    parser.add_argument('--wandb_project', type=str, default=None,
+                       help='Override wandb project name (default: f"{dataset}_GRDR" for back-compat).')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                       help='Override wandb run name (default: args.exp_name).')
     parser.add_argument('--start_loop', type=int, default=0,
                        help='Resume progressive training from this loop index (0-based). Use with --init_checkpoint to extend an existing l=start_loop ckpt with the next code layer.')
     parser.add_argument('--init_checkpoint', type=str, default=None,
@@ -186,9 +207,10 @@ def main():
         exp_segment = f'{timestamp}-{args.exp_name}' if args.exp_name else timestamp
         save_root = os.path.join(args.save_path, f'{args.dataset}/{exp_segment}')
 
-        # Initialize wandb
-        project_name = f"{config['dataset']}_GRDR"
-        wandb.init(project=project_name, name=args.exp_name or None, config=config)
+        # Initialize wandb (R-LOG: launchers can pin project/name to the package id)
+        project_name = args.wandb_project or f"{config['dataset']}_GRDR"
+        run_name = args.wandb_run_name or args.exp_name or None
+        wandb.init(project=project_name, name=run_name, config=config)
 
         checkpoint = args.init_checkpoint
         global_step = 0

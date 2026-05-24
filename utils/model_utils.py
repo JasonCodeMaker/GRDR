@@ -282,7 +282,8 @@ def create_videorqvae(
     num_latent_tokens=1,
     e_dim=64,
     in_dim=512,
-    device=0
+    device=0,
+    per_slot_init=False,
 ):
     """
     Create an initialized VideoRQVAE model without loading from checkpoint.
@@ -314,6 +315,7 @@ def create_videorqvae(
         num_emb_list=num_emb_list,
         e_dim=e_dim,
         kmeans_init=False,  # No k-means init since we're starting fresh
+        per_slot_init=per_slot_init,
     )
 
     # Normalize device to string format

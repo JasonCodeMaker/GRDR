@@ -22,7 +22,7 @@
     <section data-section="hypothesis-restated" id="hypothesis-restated" aria-label="Hypothesis re-stated (T8)">
       <article class="module-card" data-card="hypothesis-restated">
         <h2>Hypothesis (re-stated for transition, T8)</h2>
-        <p data-hypothesis-restated data-field="hypothesis-text"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5</a> + archived MSR-VTT E2.4F.1 (no F3 cell). <b>H2 (primary gate)</b>: P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H2-scale</b>: same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</p>
+        <p data-hypothesis-restated data-field="hypothesis-text"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5</a> + archived MSR-VTT E2.4F.1 (no F3 cell). <b>H2 (primary gate)</b>: P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H3 (K1 stacked-fix gate)</b>: explicit per-slot k-means seed at every loop boundary (<code>--codebook_seed_all_slots</code>) outperforms F2 alone by ≥ 1.0 CanHit@100 pp at 500K, because consequence B of <code>select(token_idx)</code> carries non-trivial signal loss that F2's train-step fixes do not recover. <b>H2-scale</b>: K1-vs-F2 winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</p>
       </article>
     </section>
 
@@ -35,18 +35,20 @@
           <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B1_train_nlt1_nopseudo.sh</code> (NEW)</li>
           <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B2_train_nlt1_pseudo.sh</code> (NEW)</li>
           <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B3_train_nlt4_pseudo_broken.sh</code> (NEW)</li>
-          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F1_train_p3_allslot.sh</code> (NEW)</li>
           <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F2_train_p3_view_div.sh</code> (NEW)</li>
-          <li data-field="owned-file"><code>models/grdr.py</code> — EDIT <code>_forward_video</code>: add <code>return_all_slots=True</code> path (return <code>[B, N, D]</code> continuous_embeds + <code>[B, N]</code> indices without slot-selecting)</li>
-          <li data-field="owned-file"><code>trainer/trainer.py</code> — EDIT <code>train_step</code>: branch on <code>multiview_all_slot_ce</code> flag; if on, compute N CE losses (one per slot) summed, plus N code_losses</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/K1_train_f2_kmeans_allslots.sh</code> (NEW) — F2 flags + <code>--codebook_seed_all_slots</code></li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/V_train_2150k_winner.sh</code> (NEW) — winning recipe (F2 or F2+K1) at full 2.15M</li>
+          <li data-field="owned-file"><code>models/grdr.py</code> — EDIT <code>_forward_video</code>: add <code>return_all_slots=True</code> path (return <code>[B, N, D]</code> continuous_embeds + <code>[B, N]</code> indices without slot-selecting). Reused by both F2 train_step and K1 do_epoch_encode.</li>
+          <li data-field="owned-file"><code>trainer/trainer.py</code> — EDIT <code>train_step</code>: branch on <code>multiview_all_slot_ce</code> flag; if on, compute N CE losses (one per slot) summed, plus N code_losses; add soft-weighted CE via token_idx + inter-slot orthogonality regularizer</li>
           <li data-field="owned-file"><code>models/video_rqvae/vq.py</code> — EDIT <code>VectorQuantizer.init_emb</code>: add <code>per_slot_init=True</code> path that runs N independent k-means (n_e/N centroids each) and concatenates into the shared <code>nn.Embedding(n_e, D)</code>. <b>Codebook stays fully shared after init — no argmin partitioning.</b></li>
-          <li data-field="owned-file"><code>run.py</code> — EDIT: add CLI flags <code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>; thread through to <code>OurTrainer</code> / <code>VideoRQVAE_V2</code> constructors</li>
+          <li data-field="owned-file"><code>trainer/evaluator.py</code> — EDIT <code>our_encode_dual</code> + <code>do_epoch_encode</code>: add <code>dedup_per_video=True</code> + <code>return_all=True</code> branch gated by <code>--codebook_seed_all_slots</code>. When on, loop-boundary k-means consumes <code>[num_videos × N, D]</code> features instead of <code>select(token_idx)</code>-reduced <code>[num_text_samples, D]</code>; new helper <code>build_per_video_loader</code>. <code>test()</code> eval path stays unchanged.</li>
+          <li data-field="owned-file"><code>run.py</code> — EDIT: add CLI flags <code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>, <code>--codebook_seed_all_slots</code>; thread through to <code>OurTrainer</code> / <code>VideoRQVAE_V2</code> / <code>do_epoch_encode</code></li>
         </ul>
       </article>
 
       <article class="module-card" data-card="diff-summary">
         <h2>Diff summary (T20)</h2>
-        <p data-field="diff-summary">5 model-side flags (<code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>) gating 3 small code edits across <code>models/grdr.py</code>, <code>trainer/trainer.py</code>, <code>models/video_rqvae/vq.py</code>; all default to <em>off</em> so the existing NLT=1 anchor recipe is unchanged. The shared 4096-codebook is <b>not</b> partitioned — view diversification comes from training signal, not codebook structure. Plus 1 new subset-builder script and 5 new launcher .sh files (P0/B1/B2/B3/F2/V). Estimated diff size: ~120-160 net LOC across the 3 model files + ~80 LOC in the subset-builder + 6 × ~30 LOC launcher scripts.</p>
+        <p data-field="diff-summary">6 model-side flags (<code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>, <code>--codebook_seed_all_slots</code>) gating 4 small code edits across <code>models/grdr.py</code>, <code>trainer/trainer.py</code>, <code>models/video_rqvae/vq.py</code>, <code>trainer/evaluator.py</code>; all default to <em>off</em> so the existing NLT=1 anchor recipe is unchanged. The shared 4096-codebook is <b>not</b> partitioned at any layer — view diversification comes from training signal (F2) and the per-loop k-means seed sees all N slots explicitly (K1). Plus 1 new subset-builder script and 7 new launcher .sh files (P0/B1/B2/B3/F2/K1/V). K1's <code>do_epoch_encode</code> branch reuses the same <code>return_all=True</code> path already added by F2 in <code>models/grdr.py</code> — no extra model-side code. Estimated diff size: ~150-200 net LOC across the 4 model/trainer files + ~80 LOC in the subset-builder + 7 × ~30 LOC launcher scripts.</p>
       </article>
     </section>
 
@@ -71,6 +73,17 @@
           <div class="k">Expected sign</div><div data-field="expected-sign">CanHit@100 ↑ vs B1 baseline; H2 prediction = F2 &gt; B1 (primary success gate). View-diversification diagnostics in healthy ranges: per-slot unique-code count &gt; 500 (each), inter-slot mean cosine &lt; 0.5, per-video sID multiplicity &gt; 2.</div>
           <div class="k">Magnitude band</div><div data-field="expected-magnitude">F2 ∈ [B1+1pp, B1+5pp] if H2 holds; F2 &lt; B1 if NLT=4 cannot be recovered at this codebase + scale.</div>
           <div class="k">Validating exps</div><div data-field="validating-exp">F2 vs B1 (primary gate); V at 2.15M vs production anchor 95.57 (H2-scale); S single-loop sweep ablates each of (a) soft-weighted CE / (b) slot_orthogonality_weight / (c) per_slot_init to confirm all three mechanisms carry weight.</div>
+        </div>
+      </article>
+
+      <article class="module-card" data-card="change" data-change-id="change-4">
+        <h3 data-field="component">K1: K-means inheritance fix (stacked on F2) — codebook seed sees all N slots</h3>
+        <div class="kv-grid">
+          <div class="k">Code anchor</div><code data-field="code-anchor">trainer/evaluator.py:our_encode_dual + trainer/evaluator.py:do_epoch_encode (reuses models/grdr.py:_forward_video return_all=True path)</code>
+          <div class="k">Description</div><div data-field="change-description">The <code>select(token_idx)</code> reduction at <a href="../../../models/grdr.py#L209"><code>models/grdr.py:209-211</code></a> has two downstream consequences. F2 fixes consequence A (train-step CE only supervises one slot). Consequence B is still live: <code>do_epoch_encode</code> at every loop boundary <em>also</em> calls <code>our_encode_dual</code> with <code>return_all=False</code>, which goes through the same select reduction; the faiss-GPU k-means that seeds the next loop's codebook therefore sees only the <code>token_idx</code>-routed slot per text sample. K1 adds <code>--codebook_seed_all_slots</code>: switch the encode pass to <b>dedup-by-video</b> (per-video DataLoader sampler) + <b>return_all=True</b> (the same code path F2 already needs for all-slot CE). The collected features now have shape <code>[num_videos × N, D]</code>; faiss-GPU k-means runs on this explicit per-slot mixture. Memory peak drops from 22 GB → 17.6 GB at 2.15M scale; encoder forward calls drop 5× (per-video instead of per-text). Same shared 4096 codebook; only the seed input changes.</div>
+          <div class="k">Expected sign</div><div data-field="expected-sign">CanHit@100(K1) ↑ vs F2 alone at 500K if H3 holds; <code>Kmeans balance</code> diagnostic (printed inside do_epoch_encode) improves. K1 do_epoch_encode wall-clock ≤ F2 (dedup-by-video drops encoder calls 5×).</div>
+          <div class="k">Magnitude band</div><div data-field="expected-magnitude">K1 ∈ [F2+1pp, F2+3pp] if H3 holds; K1 ≤ F2+0.5 pp if F2's train-step bundle is sufficient on its own (consequence B implicitly absorbed by F2's view-diversification regularizer maintaining slot distinctness through training).</div>
+          <div class="k">Validating exps</div><div data-field="validating-exp">K1 vs F2 at 500K single-seed (primary H3 gate); V at 2.15M with the K1-vs-F2 winning recipe vs production anchor 95.57 (H2-scale).</div>
         </div>
       </article>
 
@@ -105,10 +118,10 @@
     </section>
 
     <!-- T8 hypothesis re-statement (string-equal to plan.html hypothesis) -->
-    <div data-hypothesis-restated style="display:none;" aria-hidden="true">H1: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by diagnostic §2.5 + archived MSR-VTT E2.4F.1 (no F3 cell). H2 (primary gate): P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. H2-scale: same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</div>
+    <div data-hypothesis-restated style="display:none;" aria-hidden="true">H1: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by diagnostic §2.5 + archived MSR-VTT E2.4F.1 (no F3 cell). H2 (primary gate): P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. H3 (K1 stacked-fix gate): explicit per-slot k-means seed at every loop boundary (--codebook_seed_all_slots) outperforms F2 alone by ≥ 1.0 CanHit@100 pp at 500K. H2-scale: K1-vs-F2 winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</div>
 
     <footer class="footer-note">
-      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (K1 change card added — K-means inheritance fix stacked on F2; trainer/evaluator.py moves from out-of-scope to in-scope for the do_epoch_encode dedup-by-video + return_all branch; new launcher K1_train_f2_kmeans_allslots.sh + V_train_2150k_winner.sh)</time>
     </footer>
   </div>
 

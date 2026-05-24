@@ -99,8 +99,29 @@ def compute_train_test_collision(train_code_path: str, test_codes_dict: dict) ->
     }
 
 
+def build_per_video_loader(train_dataset, batch_size, tokenizer):
+    """K1 helper: one DataLoader sample per unique video_id (first occurrence)."""
+    seen = set()
+    per_video_indices = []
+    for i, s in enumerate(train_dataset.samples):
+        base = s['video_id'].rsplit('_', 1)[0] if '_' in s['video_id'] else s['video_id']
+        if base not in seen:
+            seen.add(base)
+            per_video_indices.append(i)
+    sampler = torch.utils.data.SubsetRandomSampler(per_video_indices)
+    collate_wrapper = lambda b: collate_fn(b, tokenizer, max_length=128)
+    return torch.utils.data.DataLoader(
+        train_dataset,
+        sampler=sampler,
+        batch_size=batch_size,
+        collate_fn=collate_wrapper,
+        num_workers=8,
+    )
+
+
 @torch.no_grad()
-def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, return_all=False):
+def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, return_all=False,
+                    dedup_per_video=False):
     """Encode videos and/or queries from a data loader."""
     if type not in ('both', 'video', 'query'):
         raise ValueError(f"Invalid type: {type}. Must be 'both', 'video', or 'query'")
@@ -108,9 +129,17 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
     encode_video = type in ('both', 'video')
     encode_query = type in ('both', 'query')
 
+    # K1: dedup-by-video + return_all=True path emits [num_videos, N, D] instead of [N, D]
+    if dedup_per_video:
+        assert return_all, "dedup_per_video requires return_all=True for kmeans-all-slots seed"
+        assert type == 'video', "dedup_per_video supports type='video' only"
+
     # Preallocate contiguous output arrays to avoid the Python-list-of-ndarrays
     # transient peak; shapes inferred from the first batch's model output.
-    N = len(data_loader.dataset)
+    if dedup_per_video:
+        N = len(data_loader.sampler)
+    else:
+        N = len(data_loader.dataset)
     video_embeddings_array = None
     query_embeddings_array = None
     video_code_list, query_code_list = [], []
@@ -132,7 +161,10 @@ def our_encode_dual(data_loader, model: GRDR, type='both', residual_layer=None, 
             )
             video_emb = video_output.continuous_embeds.cpu().numpy()
             if video_output.probability is not None:
-                video_codes = video_output.probability.argmax(-1).cpu().tolist()
+                probs = video_output.probability
+                # Last-layer argmax. Shape is [B, code_number] in select-mode or
+                # [B, N, code_number] in return_all-mode (K1 codebook seed path).
+                video_codes = probs.argmax(-1).cpu().tolist()
             else:
                 video_codes = [None] * video_emb.shape[0]
 
@@ -1514,7 +1546,8 @@ def norm_code_by_prefix(collection, centroids, prefix, epsilon=1):
 def do_epoch_encode(model: GRDR, train_dataset: VideoTextDataset,
                     video_codes: dict, tokenizer, batch_size, save_path, epoch, n_code,
                     code_length=1,
-                    dataset_name='msrvtt', features_root='./data_process/datasets/features'):
+                    dataset_name='msrvtt', features_root='./data_process/datasets/features',
+                    codebook_seed_all_slots=False):
     """Encode video-text samples for an epoch and run k-means."""
     from utils.data_utils import write_pkl
 
@@ -1522,6 +1555,45 @@ def do_epoch_encode(model: GRDR, train_dataset: VideoTextDataset,
 
     residual_layer = code_length - 1
     print(f'Using residual_layer={residual_layer} for K-Means (code_length={code_length})')
+
+    if codebook_seed_all_slots:
+        # K1: dedup-by-video + return_all=True; kmeans on [num_videos × N, D]
+        print('K1 codebook seed: dedup-by-video + return_all=True')
+        train_data_loader = build_per_video_loader(train_dataset, batch_size, tokenizer)
+        (video_embeddings_array, video_code_dict, video_keys) = our_encode_dual(
+            train_data_loader, model, type='video', residual_layer=residual_layer,
+            return_all=True, dedup_per_video=True,
+        )
+        # [num_videos, N, D] -> [num_videos * N, D]
+        N_vid, N_slots, D = video_embeddings_array.shape
+        print(f'Train video embeddings (K1) shape before flatten: {video_embeddings_array.shape}')
+        flat = video_embeddings_array.reshape(N_vid * N_slots, D)
+        write_pkl(flat, f'{save_path}/{epoch}.pt.collection')
+
+        # Replicate per-video prev codes N times to match the flat row count
+        per_video_codes = [video_codes.get(k, [0]) for k in video_keys]
+        prev_code_list = [pc for pc in per_video_codes for _ in range(N_slots)]
+        # Per-slot codes are last-layer argmins per slot; flatten to per-row list.
+        # K1 path always uses return_all=True, so video_code_dict values are lists.
+        per_video_code_flat = []
+        for k in video_keys:
+            per_video_code_flat.extend(video_code_dict[k])
+
+        print('Video_code balance', balance(per_video_code_flat, prev_code_list, ncentroids=n_code))
+        print('Video_code conflict', conflict(per_video_code_flat, prev_code_list))
+
+        normed_collection = norm_by_prefix(flat, prev_code_list)
+        if normed_collection is not flat:
+            del flat, video_embeddings_array
+            gc.collect()
+        nc = n_code
+        centroids, code = kmeans(normed_collection, ncentroids=nc, niter=100)
+        print('Kmeans balance', balance(code, prev_code_list))
+        print('Kmeans conflict', conflict(code, prev_code_list))
+        write_pkl(centroids, f'{save_path}/{epoch}.pt.kmeans.{nc}')
+        json.dump(code, open(f'{save_path}/{epoch}.pt.kmeans_code.{nc}', 'w'))
+        print(f'Epoch {epoch} K1 encoding complete!')
+        return
 
     collate_wrapper = lambda batch: collate_fn(batch, tokenizer, max_length=128)
     train_data_loader = torch.utils.data.DataLoader(
@@ -1699,7 +1771,8 @@ def test_dr(config, checkpoint):
         n_code=code_num,
         code_length=code_length,
         dataset_name=dataset_name,
-        features_root=features_root
+        features_root=features_root,
+        codebook_seed_all_slots=config.get('codebook_seed_all_slots', False),
     )
 
 

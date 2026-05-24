@@ -12,7 +12,8 @@ class ResidualVectorQuantizer(nn.Module):
     """
 
     def __init__(self, n_e_list, e_dim, sk_epsilons,
-                 kmeans_init = False, kmeans_iters = 100, sk_iters=100, use_linear=0, beta=0.55):
+                 kmeans_init = False, kmeans_iters = 100, sk_iters=100, use_linear=0, beta=0.55,
+                 per_slot_init=False, num_latent_tokens=1):
         super().__init__()
         self.n_e_list = n_e_list
         self.e_dim = e_dim
@@ -32,7 +33,9 @@ class ResidualVectorQuantizer(nn.Module):
                 sk_epsilon=sk_epsilon,
                 sk_iters=sk_iters,
                 use_linear=use_linear,
-                beta=beta
+                beta=beta,
+                per_slot_init=per_slot_init,
+                num_latent_tokens=num_latent_tokens,
             )
             self.vq_layers.append(quantizer)
 
