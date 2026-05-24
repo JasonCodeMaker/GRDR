@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1 - Overview</title>
+  <link rel="stylesheet" href="../../assets/research.css">
+</head>
+<body data-page="overview" data-package-id="2026-05-24-multiview-fix-pipeline">
+  <div class="shell">
+
+    <header class="masthead" data-section="masthead">
+      <div class="eyebrow">research package overview</div>
+      <h1>Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1</h1>
+      <p class="lead">models/grdr.py:204-214 reduces [B, N, D] to [B, D] via select(token_idx), leaving N-1 slots un-supervised by CE. Combined with multi-caption-per-video (pseudo on Panda; native on MSR-VTT), this produces per-row varying CE targets per video and the codebook collapse documented in package 2026-05-16-panda-pseudo-queries-multiview §2.5 (CanHit@100 = 44.59 vs anchor 95.57).</p>
+      <div class="toolbar" data-card="package-toolbar">
+        <a class="pill" href="../../index.html">Dashboard</a>
+        <a class="pill" href="../../categories/in-progress/">in-progress lane</a>
+        <a class="pill" href="../../rules/html-rules.html">HTML Rules</a>
+        <a class="pill" href="../../rules/trustworthy-research-rules.html">Trust Rules</a>
+        <span class="tag" data-field="package-id">2026-05-24-multiview-fix-pipeline</span>
+      </div>
+      <header class="status-strip" data-status-strip aria-label="Package status (T2)"></header>
+    </header>
+
+    <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
+
+    <section data-section="identity" id="identity" aria-label="Identity">
+      <article class="module-card" data-card="identity">
+        <h2>Identity</h2>
+        <div class="kv-grid">
+          <div class="k">Problem</div>
+          <div data-field="problem">models/grdr.py:204-214 reduces [B, N, D] to [B, D] via select(token_idx), leaving N-1 slots un-supervised by CE. Combined with multi-caption-per-video (pseudo on Panda; native on MSR-VTT), this produces per-row varying CE targets per video and the codebook collapse documented in package 2026-05-16-panda-pseudo-queries-multiview §2.5 (CanHit@100 = 44.59 vs anchor 95.57).</div>
+          <div class="k">Objective</div>
+          <div data-field="objective">On Panda 500K subset, train NLT=4 + Multi-View Tokenizer that beats NLT=1 baseline on CanHit@100 (single-seed, full 3-loop chain). Stretch goal: project winning recipe to 2.15M to beat production anchor (CanHit@100 = 95.57).</div>
+          <div class="k">Motivation</div>
+          <div data-field="motivation">Diagnostic package 2026-05-16-panda-pseudo-queries-multiview proved foundation cause is select-one-slot CE × per-row token_idx variance under multi-caption-per-video. The multi-view encoder structurally exists but is never exercised under retrieval-aware supervision — paper contribution #1 (multi-view tokenizer) is currently undefended. Fixing the training pipeline is the only path to recover the contribution.</div>
+          <div class="k">Primary metric (summary)</div>
+          <div data-field="primary-metric-summary">See <a href="plan.html#metric">Plan / metric</a></div>
+        </div>
+      </article>
+
+      <article class="module-card" data-card="overview-paths">
+        <h2>Path anchors</h2>
+        <div class="artifact-list">
+          <div class="artifact-row"><div class="kind">source package</div><code data-artifact="source-package">research/active/2026-05-24-multiview-fix-pipeline/</code></div>
+          <div class="artifact-row"><div class="kind">artifact root</div><code data-artifact="artifact-root">artifacts/research/2026-05-24-multiview-fix-pipeline/</code></div>
+          <div class="artifact-row"><div class="kind">html package</div><code data-artifact="html-package">research_html/packages/2026-05-24-multiview-fix-pipeline/</code></div>
+        </div>
+      </article>
+    </section>
+
+    <section data-section="plan-status" id="plan-status" aria-label="Plan status">
+      <article class="module-card" data-card="plan-status">
+        <h2>Plan status (painted from inventory)</h2>
+        <p class="card-text">Per-experiment status chips, painted from <code>experiments[]</code> in <code>data/research-packages.js</code>. Mirrors the <a href="plan.html#experiments">plan / pipeline timeline</a> &mdash; both surfaces are painted from the same inventory array, so editing inventory updates both at once. Run links are dashboard-root-relative (<code>packages/&lt;pkg-id&gt;/&hellip;</code>); the renderer prepends <code>RESEARCH_ROOT_PREFIX</code> automatically.</p>
+        <div data-field="plan-status-list"></div>
+      </article>
+    </section>
+
+    <section data-section="page-index" id="page-index" aria-label="Page index">
+      <article class="module-card" data-card="page-index">
+        <h2>Pages</h2>
+        <p class="card-text">
+          One concern per page. Open the page that owns the next decision.
+          Pages not yet created render as disabled in the package nav above.
+        </p>
+        <ul>
+          <li><a href="plan.html">Plan</a> &mdash; hypothesis, metric, baseline, budget gate, seed plan, experiments list.</li>
+          <li><a href="implementation.html">Implementation</a> &mdash; owned-files set, change cards (T14), reviewer verdicts.</li>
+          <li><a href="results.html">Results</a> &mdash; result gate table, claims, validity chips, visualizations.</li>
+          <li><a href="next-action.html">Next action</a> &mdash; chosen route, considered routes, cited evidence path.</li>
+          <li><a href="tracker.html">Tracker</a> &mdash; Resume Block, to-do list, ledger tables, Launch readiness card (T21/T16/T1), per-run live cards (T22/T15).</li>
+          <li><a href="docs/">Docs</a> &mdash; method design, contracts, code anchors, audits, references.</li>
+        </ul>
+      </article>
+    </section>
+
+    <footer class="footer-note">
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+    </footer>
+  </div>
+
+  <script>window.RESEARCH_PACKAGE_ID = "2026-05-24-multiview-fix-pipeline"; window.RESEARCH_ROOT_PREFIX = "../../";</script>
+  <script src="../../data/research-packages.js"></script>
+  <script src="../../assets/research.js"></script>
+</body>
+</html>

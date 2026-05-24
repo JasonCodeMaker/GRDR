@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fix — View Diversification (training-signal driven)</title>
+  <link rel="stylesheet" href="../../../assets/research.css">
+  <style>
+    pre.diagram { background: #fafaf7; border: 1px solid var(--g300); border-left: 4px solid var(--clay); padding: 16px 18px; margin: 18px 0; font-size: 13px; line-height: 1.45; overflow-x: auto; white-space: pre; }
+    pre.cmd, pre.code { background: #1f1f1c; color: #f4ebd5; border-radius: 4px; padding: 14px 16px; margin: 14px 0; font-size: 12.5px; line-height: 1.5; overflow-x: auto; white-space: pre; }
+    pre.code .c { color: #9aa39a; font-style: italic; }
+    pre.code .k { color: #ffd479; }
+    pre.code .s { color: #b3d18e; }
+    pre.code .n { color: #f4ebd5; }
+    pre.code .o { color: #ff9d6f; }
+    .callout { border-left: 4px solid var(--clay); background: #fbf4ea; padding: 12px 16px; margin: 16px 0; font-size: 14px; }
+    .callout.warn { border-left-color: #c4453a; background: #fbecea; }
+    .callout.ok   { border-left-color: #4a8a4f; background: #ecf5ec; }
+    .callout .tag { font-family: var(--mono); font-size: 11px; letter-spacing: 0.10em; text-transform: uppercase; color: var(--g500); display: block; margin-bottom: 4px; }
+    .step-num { display: inline-block; width: 28px; height: 28px; line-height: 28px; border-radius: 50%; background: var(--clay); color: white; font-family: var(--mono); font-size: 14px; text-align: center; margin-right: 10px; vertical-align: middle; }
+    .stage-title { display: flex; align-items: center; }
+    .kv-mini { font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin: 4px 0 12px 0; }
+    .kv-mini b { color: var(--slate); }
+    table.data-table td.mono { font-family: var(--mono); font-size: 12.5px; }
+    table.data-table td.center { text-align: center; }
+    .pill-mono { display: inline-block; font-family: var(--mono); font-size: 11.5px; padding: 2px 8px; border-radius: 12px; background: #efeae0; color: var(--slate); margin: 0 2px; }
+    .pill-mono.frozen  { background: #e0e6ee; color: #324; }
+    .pill-mono.trained { background: #e6f0e0; color: #243; }
+    .pill-mono.kmeans  { background: #fbf4ea; color: var(--clay); }
+    .pill-mono.bad     { background: #fbecea; color: #7a2620; }
+    .pill-mono.fix     { background: #ecf5ec; color: #2a4a30; }
+  </style>
+</head>
+<body data-page="docs" data-package-id="2026-05-24-multiview-fix-pipeline">
+  <div class="shell">
+
+    <header class="masthead" data-section="masthead">
+      <div class="eyebrow">Fix design — View diversification (F2)</div>
+      <h1>View Diversification &mdash; making the 4 slots learn semantically distinct views</h1>
+      <p class="lead">P3 alone supervises all N slots but does not guarantee they learn <em>different</em> things; the optimizer can collapse all N MLPs to the same function. This fix adds three training-signal mechanisms <em>without</em> partitioning the codebook: <b>(a) caption-conditioned soft-weighted CE via token_idx</b>, <b>(b) inter-slot orthogonality regularizer</b>, <b>(c) per-slot k-means init at step 0 only</b>. The 4096 codebook stays shared &mdash; two videos' "action view" should still argmin to the same centroid (correct semantic aggregation, not artificial separation). Implemented in cell <span class="pill-mono fix">F2</span>.</p>
+      <div class="toolbar">
+        <a class="pill" href="index.html">Docs index</a>
+        <a class="pill" href="fix_p3_allslot_ce.html">P3 &mdash; all-slot CE</a>
+        <a class="pill" href="fix_p1_shared_token_idx.html">P1 &mdash; shared token_idx</a>
+        <a class="pill" href="../plan.html#experiments">Plan / Experiments</a>
+      </div>
+      <header class="status-strip" data-status-strip aria-label="Package status (T2)"></header>
+    </header>
+
+    <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
+
+    <section data-section="challenge" id="challenge">
+      <article class="module-card">
+        <h2 class="stage-title"><span class="step-num">1</span> Challenge</h2>
+        <p class="card-text kv-mini"><b>code anchors:</b>
+          <a href="../../../../models/video_rqvae/encoder.py#L354">models/video_rqvae/encoder.py:354-376</a> &middot;
+          <a href="../../../../models/video_rqvae/vq.py#L45">models/video_rqvae/vq.py:45-89</a> &middot;
+          <a href="../../../../trainer/trainer.py#L154">trainer/trainer.py:154</a></p>
+
+        <p class="card-text">After P3 (all-slot CE) is in place, every slot of the multi-view encoder receives retrieval-aware gradient. But P3 by itself <b>does not prevent the 4 MLPs from converging to identical functions</b>. The optimizer's simplest solution under N independent CE losses against the same codebook is:</p>
+
+<pre class="diagram">
+  P3 alone — risk of view collapse
+  ────────────────────────────────
+   pooled_features ─► MLP_0 ─┐
+                    ─► MLP_1 ─┼─► all 4 MLPs converge to identity-like fn → same feature vector v
+                    ─► MLP_2 ─┤
+                    ─► MLP_3 ─┘   → all 4 slots argmin to same centroid → 4 identical codes
+                                  → multi-view sID is "narrow" again
+</pre>
+
+        <p class="card-text"><b>The original design intent</b> of NLT=4 multi-view tokenizer is to express one video through multiple complementary aspects, broadening sID semantics so retrieval can hit the video via any of several view-typed routes. P3 enables training all slots; this fix ensures the trained model actually expresses that diversity at inference time.</p>
+
+        <div class="callout warn">
+          <span class="tag">why per-slot codebook partitioning was rejected</span>
+          An earlier draft of F2 proposed splitting the shared 4096 codebook into 4&times;1024 disjoint slices. <b>This was abandoned</b> after recognizing two problems: (1) <b>capability loss</b> &mdash; each slot is restricted to 1024 centroids instead of the full 4096, reducing per-view representational capacity; (2) <b>artificial separation</b> &mdash; two videos with semantically similar views (e.g. both "action") would be forced to argmin to <em>different</em> codebooks just because they came through different slots, producing different sIDs for genuinely identical view content. The correct behavior is: same view content &rarr; same code, regardless of which slot produced it. View diversity should come from <em>what the slots compute</em>, not from <em>which codebook range they argmin in</em>.
+        </div>
+      </article>
+    </section>
+
+    <section data-section="motivation" id="motivation">
+      <article class="module-card">
+        <h2 class="stage-title"><span class="step-num">2</span> Motivation</h2>
+        <p class="card-text">The right way to make 4 slots learn 4 distinct views is to put differentiation pressure on the <em>training signal</em>, not on the codebook structure. Three complementary mechanisms, each addressing a different failure mode of "P3 alone":</p>
+
+        <table class="data-table">
+          <thead>
+            <tr><th class="center">mechanism</th><th>what it does</th><th>failure mode it prevents</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="mono"><b>(a)</b> soft-weighted CE via token_idx</td>
+              <td>Slot[<code>token_idx</code>] gets weight 0.7 in CE; other slots get 0.1 / (N&minus;1). All slots still receive gradient (no dormancy), but the slot routed by per-row caption k-means receives stronger pressure.</td>
+              <td>Prevents the "4 MLPs converge to same function" collapse: different caption styles route to different slots' high-weight position &rarr; each slot specializes in a caption-style cluster.</td>
+            </tr>
+            <tr>
+              <td class="mono"><b>(b)</b> inter-slot orthogonality regularizer</td>
+              <td>Add loss term &lambda;&middot;mean(<code>|cos(slot_i, slot_j)|</code>) for <code>i&ne;j</code>, pushing the 4 MLP outputs apart in feature space.</td>
+              <td>Directly penalizes representational redundancy across slots. Even if (a)'s soft routing is weak, (b) provides an explicit "be different" gradient.</td>
+            </tr>
+            <tr>
+              <td class="mono"><b>(c)</b> per-slot k-means init at step 0</td>
+              <td>At codebook initialization, run N independent k-means on the per-slot encoder outputs (1024 centroids each), then concatenate into the shared 4096-codebook. After init, the codebook is shared and trained normally.</td>
+              <td>Breaks the joint-NLT-flattened k-means init that produces ~300 dead codes on the diagnostic s3407 run (issue I2). Without (c), step 0 already starts with degenerate centroids that the optimizer cannot recover from.</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div class="callout">
+          <span class="tag">design principle</span>
+          <b>View diversity is a property of the trained representations, not a property of the codebook layout.</b> If two videos genuinely have the same "action" view, the model should be able to send both to the same centroid &mdash; that is correct semantic aggregation. What we want to prevent is "the same video's 4 slots all map to the same centroid". Mechanisms (a)+(b)+(c) target the second case without breaking the first.
+        </div>
+
+        <div class="callout">
+          <span class="tag">why all three, not just one</span>
+          (a) alone: relies on token_idx routing quality &mdash; if the per-video text k-means is noisy, the routing is noisy. (b) alone: provides differentiation pressure but no semantic anchor &mdash; slots will be orthogonal but it's unclear what "view" each represents. (c) alone: only fixes init; doesn't prevent training-time collapse. <b>Together they cover routing signal + differentiation gradient + good initialization.</b> Each is &lt; 30 LOC; the bundle fits in one cell.
+        </div>
+      </article>
+    </section>
+
+    <section data-section="hypothesis" id="hypothesis">
+      <article class="module-card">
+        <h2 class="stage-title"><span class="step-num">3</span> Hypothesis</h2>
+
+        <table class="data-table">
+          <thead>
+            <tr><th class="center">id</th><th>statement</th><th>tested by</th><th>predicted outcome if H holds</th><th>predicted outcome if H fails</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="center mono"><b>H2</b></td>
+              <td>P3 + view-diversification bundle (a)+(b)+(c) is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale (primary success gate).</td>
+              <td class="mono">F2 vs B1</td>
+              <td class="mono">F2 CanHit@100 &gt; B1 by &gt; 1 pp. Per-slot test-time unique-code counts (4 separate counts) all &gt; 500 (each slot uses a meaningful slice of the codebook); inter-slot cosine similarity &lt; 0.5 (slots produce distinct features).</td>
+              <td class="mono">F2 &lt; B1: the loss-side redesign didn't deliver the multi-view gain at this scale. Either the diagnosis missed a deeper mechanism, or NLT=4 cannot improve over NLT=1 on this codebase.</td>
+            </tr>
+            <tr>
+              <td class="center mono">H2a</td>
+              <td>Each of the 3 mechanisms (a)+(b)+(c) contributes; no single one is sufficient on its own.</td>
+              <td class="mono">S single-loop screening: F2 with one mechanism off at a time (3 variants: F2&minus;(a), F2&minus;(b), F2&minus;(c)) on workstation, code_length=1 only</td>
+              <td class="mono">Each ablated variant's loop-0 CanHit@100 is &gt; 2 pp <em>below</em> the full F2 loop-0. Confirms all three mechanisms carry weight.</td>
+              <td class="mono">One ablation matches the full F2 single-loop &mdash; that mechanism is redundant; drop it from the final recipe to minimize the diff.</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section data-section="code-change" id="code-change">
+      <article class="module-card">
+        <h2 class="stage-title"><span class="step-num">4</span> Code change &mdash; pseudo-code</h2>
+        <p class="card-text kv-mini"><b>scope:</b>
+          <a href="../../../../trainer/trainer.py">trainer/trainer.py</a> (mechanisms a + b) &middot;
+          <a href="../../../../models/video_rqvae/vq.py">models/video_rqvae/vq.py</a> (mechanism c) &middot;
+          <a href="../../../../run.py">run.py</a> (CLI flags)</p>
+
+        <h3 class="stage-title"><span class="step-num">4.1</span> Mechanism (a) &mdash; soft-weighted CE via token_idx</h3>
+
+        <p class="card-text">P3's default (sum-of-N CEs / N) is the "uniform soft routing" baseline &mdash; every slot gets weight 1/N. Mechanism (a) replaces uniform weighting with a peaked distribution: <code>slot[token_idx]</code> gets <code>high_w</code> (default 0.7), every other slot gets <code>low_w / (N-1)</code> (default 0.1). All slots still receive gradient (so no dormancy), but the per-row caption-routed slot is the dominant supervisor.</p>
+
+<pre class="code"><span class="c"># trainer/trainer.py — train_step (P3 + mechanism (a) soft-weighted CE)</span>
+multiview_all_slot_ce = bool(loss_weights.get(<span class="s">'multiview_all_slot_ce'</span>, <span class="k">False</span>))
+view_div_high_w = loss_weights.get(<span class="s">'view_div_high_weight'</span>, 0.7)   <span class="c"># default; sweep in S</span>
+view_div_low_w  = loss_weights.get(<span class="s">'view_div_low_weight'</span>,  0.1)
+
+<span class="k">if</span> multiview_all_slot_ce:
+    codes_per_slot = vid_outputs.discrete_codes              <span class="c"># [B, N]</span>
+    N = codes_per_slot.size(1)
+    query_prob = query_outputs.probability                    <span class="c"># [B, code_number]</span>
+    token_idx = batch[<span class="s">'token_idx'</span>]                          <span class="c"># [B]</span>
+
+    <span class="c"># Build per-row slot weights: peak at token_idx, low elsewhere</span>
+    slot_weights = torch.full((codes_per_slot.size(0), N),
+                              view_div_low_w / max(N - 1, 1),
+                              device=codes_per_slot.device)
+    slot_weights.scatter_(1, token_idx.unsqueeze(1), view_div_high_w)
+    slot_weights = slot_weights / slot_weights.sum(dim=1, keepdim=<span class="k">True</span>)
+                                                              <span class="c"># [B, N]; rows sum to 1</span>
+
+    ce_loss = 0.0
+    <span class="k">for</span> t <span class="k">in</span> range(N):
+        per_row = F.cross_entropy(
+            query_prob,                                       <span class="c"># [B, code_number]</span>
+            codes_per_slot[:, t].detach(),
+            label_smoothing=0.1,
+            reduction=<span class="s">'none'</span>,
+        )                                                     <span class="c"># [B]</span>
+        ce_loss = ce_loss + (per_row * slot_weights[:, t]).mean()</pre>
+
+        <h3 class="stage-title"><span class="step-num">4.2</span> Mechanism (b) &mdash; inter-slot orthogonality regularizer</h3>
+
+        <p class="card-text">Compute the cosine similarity matrix among the N slot features per row, take the absolute value of off-diagonal entries, and average. Add to the total loss with weight <code>w_ortho</code> (sweep in S screening over &lbrace;0.01, 0.1, 1.0&rbrace;).</p>
+
+<pre class="code"><span class="c"># trainer/trainer.py — same train_step, after CE / code_loss / cl_dd_loss / rq_loss</span>
+w_ortho = loss_weights.get(<span class="s">'slot_orthogonality_weight'</span>, 0.0)
+<span class="k">if</span> multiview_all_slot_ce <span class="k">and</span> w_ortho &gt; 0:
+    <span class="c"># vid_outputs.continuous_embeds is [B, N, D]</span>
+    slot_feats = F.normalize(vid_outputs.continuous_embeds, dim=-1, eps=1e-12)
+    sim = slot_feats @ slot_feats.transpose(-1, -2)           <span class="c"># [B, N, N]</span>
+    eye = torch.eye(N, device=sim.device).unsqueeze(0)        <span class="c"># [1, N, N]</span>
+    off_diag = (sim - eye).abs()                              <span class="c"># diagonal nulls out; off-diag = |cos|</span>
+    ortho_loss = off_diag.sum(dim=(-1, -2)) / (N * (N - 1))    <span class="c"># mean per batch row</span>
+    total_loss = total_loss + w_ortho * ortho_loss.mean()</pre>
+
+        <p class="card-text">Notes:</p>
+        <ul>
+          <li>Operates on the <em>continuous</em> encoder output, not the quantized output &mdash; we want the MLP outputs to be different even before VQ snaps them to centroids.</li>
+          <li><code>(sim - eye)</code> zeroes out the diagonal (slot-to-itself cosine = 1 trivially). <code>.abs()</code> penalizes both positive and negative correlation; orthogonal slots get loss = 0.</li>
+          <li>Cost: one batch-matmul over [B, N, D] tensors &mdash; negligible.</li>
+        </ul>
+
+        <h3 class="stage-title"><span class="step-num">4.3</span> Mechanism (c) &mdash; per-slot k-means init at step 0</h3>
+
+        <p class="card-text">Modify <code>VectorQuantizer.init_emb</code> so that when <code>per_slot_init=True</code> AND the data shape implies N&gt;1 slots, run N independent k-means each on B samples and <code>n_e/N</code> centroids, then concatenate into the shared <code>nn.Embedding(n_e, D)</code>. <b>The codebook stays shared; only the init seeds are slot-aware.</b> After init, every slot's argmin can land anywhere in the n_e codebook.</p>
+
+<pre class="code"><span class="c"># models/video_rqvae/vq.py — VectorQuantizer.init_emb</span>
+<span class="k">def</span> <span class="n">init_emb</span>(self, data):
+    <span class="c">"""Initialize codebook with k-means. If per_slot_init=True and the</span>
+<span class="c">    flattened input came from a multi-slot encoder (B*N, D), run N k-means</span>
+<span class="c">    on the per-slot batches and concatenate. Otherwise: standard single k-means."""</span>
+    <span class="k">if</span> getattr(self, <span class="s">'per_slot_init'</span>, <span class="k">False</span>) <span class="k">and</span> self.num_latent_tokens &gt; 1:
+        BN, D = data.shape
+        N = self.num_latent_tokens
+        <span class="k">assert</span> BN % N == 0, f<span class="s">"data {BN} not divisible by num_latent_tokens {N}"</span>
+        <span class="k">assert</span> self.n_e % N == 0, \
+            f<span class="s">"n_e={self.n_e} not divisible by num_latent_tokens={N} for per-slot init"</span>
+        B = BN // N
+        slot_k = self.n_e // N                                <span class="c"># 1024 when n_e=4096, N=4</span>
+
+        <span class="c"># [B*N, D] -> [B, N, D] -> [N, B, D]; each slot gets B samples</span>
+        data_per_slot = data.view(B, N, D).permute(1, 0, 2)
+
+        per_slot_centers = []
+        <span class="k">for</span> t <span class="k">in</span> range(N):
+            centers_t = kmeans(data_per_slot[t], slot_k, self.kmeans_iters)
+            per_slot_centers.append(centers_t)                <span class="c"># [slot_k, D]</span>
+
+        centers = torch.cat(per_slot_centers, dim=0)          <span class="c"># [n_e, D]</span>
+    <span class="k">else</span>:
+        <span class="c"># Standard single k-means on all B*N samples (current behavior)</span>
+        centers = kmeans(data, self.n_e, self.kmeans_iters)
+
+    self.embedding.weight.data.copy_(centers)
+    self.initted = <span class="k">True</span></pre>
+
+        <div class="callout">
+          <span class="tag">key invariant</span>
+          The codebook <code>nn.Embedding(n_e, D)</code> is <b>one shared parameter</b>. Mechanism (c) only changes <em>how the initial n_e centroids are computed</em>: instead of one k-means on B&times;N points, it's N k-means on B points each, with the resulting centroids concatenated row-wise. After init, the <code>forward</code> path is unchanged &mdash; every slot argmins against the full vocabulary. Two videos' "action" view from different slots can argmin to the same centroid (correct semantic aggregation).
+        </div>
+
+        <h3 class="stage-title"><span class="step-num">4.4</span> CLI flags wiring</h3>
+
+<pre class="code"><span class="c"># run.py — argparse</span>
+parser.add_argument(<span class="s">'--view_div_high_weight'</span>, type=float, default=0.0,
+                    help=<span class="s">'Mechanism (a): CE weight on the token_idx-routed slot. '</span>
+                         <span class="s">'0.0 disables soft routing (P3 default uniform 1/N). '</span>
+                         <span class="s">'F2 default: 0.7. See fix_view_diversification.html §4.1.'</span>)
+parser.add_argument(<span class="s">'--view_div_low_weight'</span>, type=float, default=0.0,
+                    help=<span class="s">'Mechanism (a): CE weight on non-routed slots (sum). '</span>
+                         <span class="s">'F2 default: 0.1 (split N-1 ways).'</span>)
+parser.add_argument(<span class="s">'--slot_orthogonality_weight'</span>, type=float, default=0.0,
+                    help=<span class="s">'Mechanism (b): inter-slot orthogonality regularizer coefficient lambda. '</span>
+                         <span class="s">'F2 default: TBD by S sweep over {0.01, 0.1, 1.0}.'</span>)
+parser.add_argument(<span class="s">'--per_slot_init'</span>, action=<span class="s">'store_true'</span>,
+                    help=<span class="s">'Mechanism (c): N independent k-means at codebook init only. '</span>
+                         <span class="s">'Codebook stays SHARED after init - no argmin partitioning.'</span>)</pre>
+
+        <h3 class="stage-title"><span class="step-num">4.5</span> F2 launcher composition</h3>
+
+<pre class="code"><span class="c"># research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F2_train_p3_view_div.sh</span>
+DEVICE=<span class="o">${</span>DEVICE:-0<span class="o">}</span>
+python run.py \
+  --dataset panda \
+  --use_pseudo_queries \
+  --num_latent_tokens 4 \
+  --code_num 4096 \
+  --code_length 3 \
+  --multiview_all_slot_ce \                          <span class="c"># P3 backbone</span>
+  --view_div_high_weight 0.7 \                        <span class="c"># mechanism (a)</span>
+  --view_div_low_weight  0.1 \
+  --slot_orthogonality_weight 0.1 \                   <span class="c"># mechanism (b); S sweep updates this</span>
+  --per_slot_init \                                   <span class="c"># mechanism (c)</span>
+  --pretrain_lr 2e-4 --main_lr 5e-5 --fit_lr 2e-5 \
+  --seed <span class="o">${</span>SEED:-42<span class="o">}</span> \
+  --save_path var/research/2026-05-24-multiview-fix-pipeline/output/...</pre>
+
+        <h3 class="stage-title"><span class="step-num">4.6</span> Diagnostic measurements for view diversification</h3>
+
+        <p class="card-text">In addition to CanHit@100, evaluate the trained model's actual view diversity. Add to the eval-time logging:</p>
+
+        <table class="data-table">
+          <thead>
+            <tr><th>diagnostic</th><th>what it measures</th><th>healthy value</th></tr>
+          </thead>
+          <tbody>
+            <tr><td class="mono">per-slot unique-code count</td><td>Number of distinct codes each slot produces over the test pool</td><td>Each of 4 slots: &gt; 500 unique codes (out of 4096 vocab)</td></tr>
+            <tr><td class="mono">inter-slot mean cosine</td><td>Mean &lt;cos(slot_i, slot_j)&gt; over <code>i&ne;j</code> on test set continuous embeds</td><td>&lt; 0.5 (slots are measurably different in feature space)</td></tr>
+            <tr><td class="mono">cross-slot code overlap</td><td>How often slot_i's code = slot_j's code for the same video</td><td>&lt; 30 % (some overlap OK when views genuinely match; full collapse is &gt; 90 %)</td></tr>
+            <tr><td class="mono">per-video sID multiplicity</td><td>How many distinct codes a single video produces across its N slots</td><td>&gt; 2 on average (the "broader sID semantic" goal)</td></tr>
+          </tbody>
+        </table>
+
+        <p class="card-text">These diagnostics distinguish "F2 won because the slots truly diversified" from "F2 won by coincidence and the slots are still collapsed". Both outcomes pass H2 on CanHit@100, but only the first satisfies the original design intent.</p>
+
+        <div class="callout ok">
+          <span class="tag">success criterion for this fix</span>
+          F2 passes the primary gate when (i) CanHit@100 &gt; B1 single-seed full chain on 500K, AND (ii) the four view-diversification diagnostics above are in their healthy ranges. If (i) passes but (ii) shows view collapse, the win is suspicious &mdash; report it explicitly in results.html as "won despite collapsed views" and treat it as a follow-up question.
+        </div>
+      </article>
+    </section>
+
+    <footer class="footer-note">
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (rewrite — dropped per-slot codebook partitioning per user feedback; replaced with shared-codebook + training-signal driven view diversification: soft-weighted CE + orthogonality + per-slot init-only)</time>
+    </footer>
+  </div>
+
+  <script>window.RESEARCH_PACKAGE_ID = "2026-05-24-multiview-fix-pipeline"; window.RESEARCH_ROOT_PREFIX = "../../../";</script>
+  <script src="../../../data/research-packages.js"></script>
+  <script src="../../../assets/research.js"></script>
+</body>
+</html>

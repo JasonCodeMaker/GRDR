@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1 - Results</title>
+  <link rel="stylesheet" href="../../assets/research.css">
+</head>
+<body data-page="results" data-package-id="2026-05-24-multiview-fix-pipeline">
+  <!-- Pattern reference for Track tables, headline metric-strip, eval banner, and <details> collapse hierarchy: ~/.claude/skills/research-package/references/results-page-pattern.md -->
+  <div class="shell">
+
+    <header class="masthead" data-section="masthead">
+      <div class="eyebrow">results &amp; analysis</div>
+      <h1>Results &mdash; Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1</h1>
+      <p class="lead">Result gate table, per-experiment cards with claim analysis, validity-class chips (never aggregated), inline visualizations.</p>
+      <div class="toolbar"><a class="pill" href="index.html">Overview</a><a class="pill" href="plan.html">Plan</a><a class="pill" href="next-action.html">Next action</a></div>
+      <header class="status-strip" data-status-strip aria-label="Package status (T2)"></header>
+    </header>
+
+    <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
+
+    <section data-section="hypothesis-restated" id="hypothesis-restated" aria-label="Hypothesis re-stated (T8)">
+      <article class="module-card" data-card="hypothesis-restated">
+        <h2>Hypothesis (re-stated for transition, T8)</h2>
+        <p data-hypothesis-restated data-field="hypothesis-text">H1: P3 all-slot CE supervision is necessary to exercise the multi-view encoder. H2: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for multi-view advantage to materialize at 500K scale. H3: P1 alone (pseudo siblings share real-caption <code>token_idx</code>) is insufficient (F3 control proves it: must reduce to baseline NLT=1 behavior).</p>
+      </article>
+    </section>
+
+    <section data-section="gate" id="gate" aria-label="Result gate">
+      <article class="module-card" data-card="result-gate">
+        <h2>Result gate (T23)</h2>
+        <table class="data-table" data-table="result-gate">
+          <thead><tr><th>Exp ID</th><th>Validity</th><th>Baseline</th><th>PLAN gate</th><th>Observed metric</th><th>Budget use</th><th>Seed status</th><th>Artifacts</th><th>Verdict</th><th>Reason</th></tr></thead>
+          <tbody data-table-body="result-gate">
+            <tr data-ack="result-pass" data-ack-value="">
+              <td data-field="exp-id">unmeasured</td>
+              <td data-validity="missing">missing</td>
+              <td data-field="baseline">unmeasured</td>
+              <td data-field="plan-gate">unmeasured</td>
+              <td data-field="observed-metric">unmeasured</td>
+              <td data-field="budget-use">unmeasured</td>
+              <td data-field="seed-status">unmeasured</td>
+              <td data-field="artifact-completeness">unmeasured</td>
+              <td data-decision data-field="verdict">unmeasured</td>
+              <td data-field="reason">unmeasured</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </section>
+
+    <section data-section="exp-results" id="exp-results" aria-label="Per-experiment results">
+      <h2>Per-experiment results</h2>
+      <article class="module-card exp-card" data-card="exp-result" data-exp-id="exp-1" data-validity="missing">
+        <h3 data-field="exp-title">Exp_Name (date) &mdash; unmeasured</h3>
+        <div class="kv-grid">
+          <div class="k">Observed metric</div>
+          <div>
+            <span data-field="observed-metric">unmeasured</span>
+            (<code data-artifact="metric-file">unmeasured</code>,
+            <time data-field="last-modified" datetime="">unmeasured</time>,
+            checkpoint <code data-field="checkpoint">unmeasured</code>,
+            commit <code data-field="git-commit">unmeasured</code>)
+          </div>
+          <div class="k">Protocol match</div><div data-field="protocol-match-verdict">unmeasured</div>
+        </div>
+        <article class="module-card" data-card="supported-claims">
+          <h4>Supported claims</h4>
+          <p data-field="supported-claims">unmeasured</p>
+        </article>
+        <article class="module-card" data-card="unsupported-claims">
+          <h4>Unsupported claims</h4>
+          <p data-field="unsupported-claims">unmeasured</p>
+        </article>
+        <figure data-card="result-plot">
+          <svg viewBox="0 0 320 120" role="img" aria-label="Result plot placeholder" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0" y="0" width="320" height="120" fill="#ffffff" stroke="#d1cfc5" stroke-width="1"/>
+            <polyline points="10,100 60,90 110,70 160,75 210,55 260,50 310,40" fill="none" stroke="#d97757" stroke-width="2"/>
+            <text x="10" y="14" font-family="ui-monospace" font-size="10" fill="#87867f">result plot (placeholder)</text>
+          </svg>
+          <figcaption class="card-text">Inline SVG plot per experiment (R3).</figcaption>
+        </figure>
+      </article>
+    </section>
+
+    <section data-section="validity-summary" id="validity-summary" aria-label="Validity-class summary (T10, R16)">
+      <article class="module-card" data-card="validity-summary">
+        <h2>Validity counts (T10, R16: never aggregated across classes)</h2>
+        <p>
+          <span class="chip" data-validity="valid">valid 0</span>
+          <span class="chip" data-validity="diagnostic_only">diagnostic_only 0</span>
+          <span class="chip" data-validity="failed">failed 0</span>
+          <span class="chip" data-validity="missing">missing 0</span>
+        </p>
+      </article>
+
+      <article class="module-card" data-card="no-change-affirmation">
+        <h2>No-change affirmation (T16)</h2>
+        <div class="kv-grid">
+          <div class="k">Affirmed</div><div data-field="affirmed">unmeasured</div>
+          <div class="k">Commit hash</div><code data-field="commit-hash">unmeasured</code>
+          <div class="k">Owned files</div><div><a href="implementation.html#owned-files">implementation / owned files</a></div>
+        </div>
+      </article>
+    </section>
+
+    <footer class="footer-note">
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+    </footer>
+  </div>
+
+  <script>window.RESEARCH_PACKAGE_ID = "2026-05-24-multiview-fix-pipeline"; window.RESEARCH_ROOT_PREFIX = "../../";</script>
+  <script src="../../data/research-packages.js"></script>
+  <script src="../../assets/research.js"></script>
+</body>
+</html>

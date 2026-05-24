@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1 - Docs</title>
+  <link rel="stylesheet" href="../../../assets/research.css">
+</head>
+<body data-page="docs" data-package-id="2026-05-24-multiview-fix-pipeline">
+  <div class="shell">
+
+    <header class="masthead" data-section="masthead">
+      <div class="eyebrow">package docs</div>
+      <h1>Docs &mdash; Multi-View Training Pipeline Fix — NLT=4 should beat NLT=1</h1>
+      <p class="lead">Source material that grounds the plan, implementation, runs, and results: method design, metric/dataset/runtime contracts, code anchors, audits, reviews, references.</p>
+      <div class="toolbar"><a class="pill" href="../">Overview</a><a class="pill" href="../../../index.html">Dashboard</a></div>
+      <header class="status-strip" data-status-strip aria-label="Package status (T2)"></header>
+    </header>
+
+    <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
+
+    <section data-section="docs-grid" id="docs-grid" aria-label="Source documents">
+      <h2>Source documents</h2>
+      <p class="card-text">Each fix has a dedicated design doc with four sections: <b>Challenge</b> (the specific problem this fix addresses), <b>Motivation</b> (why this fix specifically), <b>Hypothesis</b> (testable prediction tied to a cell on <a href="../plan.html#experiments">plan / experiments</a>), and <b>Code change</b> with pseudo-code. The diagnostic foundation cause is owned by the upstream package <a href="../../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html">2026-05-16-panda-pseudo-queries-multiview &sect;2.5</a>; the fix docs below cite it as the upstream evidence.</p>
+      <div class="package-grid">
+        <article class="module-card" data-card="doc-source" data-doc-card="fix-p3-allslot">
+          <h3 data-field="doc-title">Fix P3 &mdash; All-slot CE supervision <span class="pill" style="background:#ecf5ec;color:#2a4a30;">foundation fix</span></h3>
+          <p class="card-text" data-field="doc-summary">Remove <code>select(token_idx)</code> from the train_step; supervise every slot of the multi-view encoder under CE/code loss. The only fix that addresses the foundation cause directly. P3 is the <b>backbone</b> of F2 — it is never run standalone (the F1 "P3 alone" cell was dropped because the 4 MLPs predictably collapse to the same function without view-diversification constraints).</p>
+          <p class="card-text"><a href="fix_p3_allslot_ce.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F2</a> (bundled with view diversification) &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+        </article>
+        <article class="module-card" data-card="doc-source" data-doc-card="fix-view-div">
+          <h3 data-field="doc-title">View diversification <span class="pill" style="background:#ecf5ec;color:#2a4a30;">secondary fix</span></h3>
+          <p class="card-text" data-field="doc-summary">Make the 4 slots learn distinct views via three training-signal mechanisms: (a) caption-conditioned soft-weighted CE via token_idx, (b) inter-slot orthogonality regularizer, (c) per-slot k-means init at step 0 only. The 4096 codebook stays shared — same view content keeps mapping to same centroid. Bundled with P3 in F2.</p>
+          <p class="card-text"><a href="fix_view_diversification.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F2</a> &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+        </article>
+        <article class="module-card" data-card="doc-source" data-doc-card="fix-p1-shared-tokidx">
+          <h3 data-field="doc-title">Fix P1 &mdash; Shared <code>token_idx</code> across pseudo siblings <span class="pill" style="background:#fbecea;color:#7a2620;">control</span></h3>
+          <p class="card-text" data-field="doc-summary">Cheap-fix control variant: pseudo siblings inherit real-caption <code>token_idx</code>. Predicted to underperform P3 because it leaves the foundation cause intact. Run as the H3-falsification cell; without it, a reviewer can ask "did you actually need the foundation fix?"</p>
+          <p class="card-text"><a href="fix_p1_shared_token_idx.html">Open</a> &middot; cells: <a href="../plan.html#experiments">F3</a> &middot; <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time></p>
+        </article>
+      </div>
+    </section>
+
+    <footer class="footer-note">
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>
+    </footer>
+  </div>
+
+  <script>window.RESEARCH_PACKAGE_ID = "2026-05-24-multiview-fix-pipeline"; window.RESEARCH_ROOT_PREFIX = "../../../";</script>
+  <script src="../../../data/research-packages.js"></script>
+  <script src="../../../assets/research.js"></script>
+</body>
+</html>
