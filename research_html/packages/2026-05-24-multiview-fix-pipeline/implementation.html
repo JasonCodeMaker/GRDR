@@ -22,7 +22,7 @@
     <section data-section="hypothesis-restated" id="hypothesis-restated" aria-label="Hypothesis re-stated (T8)">
       <article class="module-card" data-card="hypothesis-restated">
         <h2>Hypothesis (re-stated for transition, T8)</h2>
-        <p data-hypothesis-restated data-field="hypothesis-text">H1: P3 all-slot CE supervision is necessary to exercise the multi-view encoder. H2: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for multi-view advantage to materialize at 500K scale. H3: P1 alone (pseudo siblings share real-caption <code>token_idx</code>) is insufficient (F3 control proves it: must reduce to baseline NLT=1 behavior).</p>
+        <p data-hypothesis-restated data-field="hypothesis-text"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5</a> + archived MSR-VTT E2.4F.1 (no F3 cell). <b>H2 (primary gate)</b>: P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H2-scale</b>: same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</p>
       </article>
     </section>
 
@@ -31,24 +31,22 @@
         <h2>Owned files (T20)</h2>
         <p class="card-text">List the files this implementation owns. Downstream stage pages affirm the boundary by linking back to this card; they do not re-list the file set.</p>
         <ul data-field="owned-files-list">
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/build_500k_subset.py</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B1_train_nlt1_nopseudo.sh</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B2_train_nlt1_pseudo.sh</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B3_train_nlt4_pseudo_broken.sh</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F1_train_p3_allslot.sh</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F2_train_p3_view_div.sh</code> (NEW)</li>
-          <li><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F3_train_p1_shared_tokidx.sh</code> (NEW)</li>
-          <li><code>models/grdr.py</code> — EDIT <code>_forward_video</code>: add <code>return_all_slots=True</code> path (return <code>[B, N, D]</code> continuous_embeds + <code>[B, N]</code> indices without slot-selecting)</li>
-          <li><code>trainer/trainer.py</code> — EDIT <code>train_step</code>: branch on <code>multiview_all_slot_ce</code> flag; if on, compute N CE losses (one per slot) summed, plus N code_losses</li>
-          <li><code>models/video_rqvae/vq.py</code> — EDIT <code>VectorQuantizer.init_emb</code>: add <code>per_slot_init=True</code> path that runs N independent k-means (n_e/N centroids each) and concatenates into the shared <code>nn.Embedding(n_e, D)</code>. <b>Codebook stays fully shared after init — no argmin partitioning.</b></li>
-          <li><code>utils/data_utils.py</code> — EDIT <code>assign_tokens_per_video</code> (lines 386-422): add <code>shared_token_idx_per_video=True</code> branch — k-means only over real captions, then propagate the real-caption label to all pseudo siblings of that video</li>
-          <li><code>run.py</code> — EDIT: add CLI flags <code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>, <code>--shared_token_idx_per_video</code>; thread through to <code>OurTrainer</code> / <code>VideoRQVAE_V2</code> / <code>VideoTextDataset</code> constructors</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/build_500k_subset.py</code> (NEW)</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B1_train_nlt1_nopseudo.sh</code> (NEW)</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B2_train_nlt1_pseudo.sh</code> (NEW)</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/B3_train_nlt4_pseudo_broken.sh</code> (NEW)</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F1_train_p3_allslot.sh</code> (NEW)</li>
+          <li data-field="owned-file"><code>research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/F2_train_p3_view_div.sh</code> (NEW)</li>
+          <li data-field="owned-file"><code>models/grdr.py</code> — EDIT <code>_forward_video</code>: add <code>return_all_slots=True</code> path (return <code>[B, N, D]</code> continuous_embeds + <code>[B, N]</code> indices without slot-selecting)</li>
+          <li data-field="owned-file"><code>trainer/trainer.py</code> — EDIT <code>train_step</code>: branch on <code>multiview_all_slot_ce</code> flag; if on, compute N CE losses (one per slot) summed, plus N code_losses</li>
+          <li data-field="owned-file"><code>models/video_rqvae/vq.py</code> — EDIT <code>VectorQuantizer.init_emb</code>: add <code>per_slot_init=True</code> path that runs N independent k-means (n_e/N centroids each) and concatenates into the shared <code>nn.Embedding(n_e, D)</code>. <b>Codebook stays fully shared after init — no argmin partitioning.</b></li>
+          <li data-field="owned-file"><code>run.py</code> — EDIT: add CLI flags <code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>; thread through to <code>OurTrainer</code> / <code>VideoRQVAE_V2</code> constructors</li>
         </ul>
       </article>
 
       <article class="module-card" data-card="diff-summary">
         <h2>Diff summary (T20)</h2>
-        <p data-field="diff-summary">6 model-side flags (<code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>, <code>--shared_token_idx_per_video</code>) gating 4 small code edits across <code>models/grdr.py</code>, <code>trainer/trainer.py</code>, <code>models/video_rqvae/vq.py</code>, <code>utils/data_utils.py</code>; all default to <em>off</em> so the existing NLT=1 anchor recipe is unchanged. The shared 4096-codebook is <b>not</b> partitioned — view diversification comes from training signal, not codebook structure. Plus 1 new subset-builder script and 6 new launcher .sh files. Estimated diff size: ~150-200 net LOC across the 4 model files + ~80 LOC in the subset-builder + 6 × ~30 LOC launcher scripts.</p>
+        <p data-field="diff-summary">5 model-side flags (<code>--multiview_all_slot_ce</code>, <code>--view_div_high_weight</code>, <code>--view_div_low_weight</code>, <code>--slot_orthogonality_weight</code>, <code>--per_slot_init</code>) gating 3 small code edits across <code>models/grdr.py</code>, <code>trainer/trainer.py</code>, <code>models/video_rqvae/vq.py</code>; all default to <em>off</em> so the existing NLT=1 anchor recipe is unchanged. The shared 4096-codebook is <b>not</b> partitioned — view diversification comes from training signal, not codebook structure. Plus 1 new subset-builder script and 5 new launcher .sh files (P0/B1/B2/B3/F2/V). Estimated diff size: ~120-160 net LOC across the 3 model files + ~80 LOC in the subset-builder + 6 × ~30 LOC launcher scripts.</p>
       </article>
     </section>
 
@@ -59,9 +57,9 @@
         <div class="kv-grid">
           <div class="k">Code anchor</div><code data-field="code-anchor">models/grdr.py:_forward_video + trainer/trainer.py:train_step</code>
           <div class="k">Description</div><div data-field="change-description">Replace <code>select(token_idx)</code> reduction in <code>_forward_video</code> with an <code>all_slots</code> branch that returns full <code>[B, N, D]</code> continuous_embeds + <code>[B, N]</code> indices. In <code>train_step</code>, when the flag is on, compute one CE per slot (4× CE summed) against each slot's own code target; one code_loss per slot summed. The query head still produces a single <code>query_prob</code>; the matching question is "does query predict each slot's code" — option A is N separate CE losses; option B is <code>logsumexp</code>-marginalized CE. Default to A; B is a follow-up.</div>
-          <div class="k">Expected sign</div><div data-field="expected-sign">CanHit@100 ↑ (vs B3 reproducer when bundled into F2); H1 prediction = F2 &gt; F3 by &gt; 5 pp with F3 ≈ B1</div>
+          <div class="k">Expected sign</div><div data-field="expected-sign">CanHit@100 ↑ (vs B3 reproducer when bundled into F2); H2 prediction = F2 &gt; B1 (primary gate). H1 (loss-side necessity) supported by §2.5 + cross-dataset evidence; no F3 cell.</div>
           <div class="k">Magnitude band</div><div data-field="expected-magnitude">F2 CanHit@100 &gt; B1 + 1 pp if H2 holds; F2 &lt; B1 if loss-side fix doesn't recover the gap at 500K (drop NLT=4 from production)</div>
-          <div class="k">Validating exps</div><div data-field="validating-exp">F2 (P3 + view div) vs B1 (primary gate); F3 (P1 alone) vs F2 proves loss-side fix necessary. P3 alone (no view div) cell dropped — predicted to collapse without diversification constraints.</div>
+          <div class="k">Validating exps</div><div data-field="validating-exp">F2 (P3 + view div) vs B1 (primary gate); V at 2.15M vs production anchor 95.57. F1 (P3 alone) + F3 (P1 alone) cells both dropped — outcomes structurally predicted, no info value.</div>
         </div>
       </article>
 
@@ -72,46 +70,42 @@
           <div class="k">Description</div><div data-field="change-description">Three training-signal mechanisms applied on top of P3 to make the 4 MLPs learn distinct views <em>without</em> partitioning the codebook. <b>(a) soft-weighted CE via token_idx</b>: per-row slot weights = 0.7 on <code>token_idx</code>-routed slot, 0.1/(N&minus;1) on others (still all &gt; 0 → no dormancy). <b>(b) inter-slot orthogonality regularizer</b>: <code>w_ortho · mean(|cos(slot_i, slot_j)|)</code> over off-diagonal pairs. <b>(c) per-slot k-means init</b>: at step 0 only, run N independent k-means (n_e/N centroids each) on per-slot encoder outputs and concatenate into the shared <code>nn.Embedding(n_e, D)</code>; after init the codebook is fully shared and any slot can argmin to any centroid. <b>Same view content → same code is preserved</b> (semantic aggregation works correctly); view diversification comes from training signal, not from codebook partitioning.</div>
           <div class="k">Expected sign</div><div data-field="expected-sign">CanHit@100 ↑ vs B1 baseline; H2 prediction = F2 &gt; B1 (primary success gate). View-diversification diagnostics in healthy ranges: per-slot unique-code count &gt; 500 (each), inter-slot mean cosine &lt; 0.5, per-video sID multiplicity &gt; 2.</div>
           <div class="k">Magnitude band</div><div data-field="expected-magnitude">F2 ∈ [B1+1pp, B1+5pp] if H2 holds; F2 &lt; B1 if NLT=4 cannot be recovered at this codebase + scale.</div>
-          <div class="k">Validating exps</div><div data-field="validating-exp">F2 vs B1 (primary gate); F3 (P1 control) vs F2 proves loss-side fix necessary; S single-loop sweep ablates each of (a) soft-weighted CE / (b) slot_orthogonality_weight / (c) per_slot_init to confirm all three mechanisms carry weight.</div>
+          <div class="k">Validating exps</div><div data-field="validating-exp">F2 vs B1 (primary gate); V at 2.15M vs production anchor 95.57 (H2-scale); S single-loop sweep ablates each of (a) soft-weighted CE / (b) slot_orthogonality_weight / (c) per_slot_init to confirm all three mechanisms carry weight.</div>
         </div>
       </article>
 
-      <article class="module-card" data-card="change" data-change-id="change-3">
-        <h3 data-field="component">P1: shared token_idx across pseudo siblings (F3 control)</h3>
+      <article class="module-card" data-card="change" data-change-id="change-3" data-cell-dropped="true">
+        <h3 data-field="component">P1: shared token_idx across pseudo siblings — <span class="pill" style="background:#fbecea;color:#7a2620;">cell dropped, design note only</span></h3>
         <div class="kv-grid">
-          <div class="k">Code anchor</div><code>utils/data_utils.py:assign_tokens_per_video</code>
-          <div class="k">Description</div><div>When <code>shared_token_idx_per_video=True</code>, run per-video text k-means over <em>only the real caption</em> (which short-circuits to <code>k=1</code> on Panda), then propagate that label to all 4 pseudo siblings of the same video. Effectively forces all 5 rows of one video to share <code>token_idx=0</code>. This is the cheap fix; expected to underperform F2 because it reduces the configuration to "NLT=4 + 3 dormant MLPs + 5× CE on slot 0" — equivalent to row 3 of the §2.5 2×2 truth table (the archived MSR-VTT no-pseudo NLT&gt;1 result was also marginal).</div>
-          <div class="k">Expected sign</div><div>F3 CanHit@100 ≈ B1 (no improvement; the 3 dormant MLPs add no value); H3 prediction = F3 &lt; F2 by &gt; 5 pp</div>
-          <div class="k">Magnitude band</div><div>F3 ∈ [B1−2pp, B1+1pp] if H3 holds (just matches B1); F3 ≈ F2 would falsify H3 (would mean the loss-side fix wasn't actually needed)</div>
-          <div class="k">Validating exps</div><div>F3 vs F2 (proves loss-side fix necessary); F3 vs B1 (proves P1 alone is insufficient)</div>
+          <div class="k">Status</div><div data-field="status"><b>Not implemented in this package.</b> The F3 cell was dropped on 2026-05-24 because the configuration structurally degenerates to "NLT=1 + 3 dormant MLPs" on Panda (per-video real-caption k-means short-circuits to <code>k=1</code> when <code>num_real_texts=1</code>; all rows get <code>token_idx=0</code>; <code>select(token_idx)</code> still picks slot 0 only). No information gain vs ~10 h workstation cost.</div>
+          <div class="k">Theoretical support</div><div data-field="theoretical-support">Diagnostic <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">§2.5 truth-table row 3</a> + archived <code>research/archive/2026-05-04-one-loop-multiview-route-training</code> (E2.4F.1: MSR-VTT NLT&gt;1 no-pseudo, train/test unique sIDs 11/8, "no promotable method").</div>
+          <div class="k">Reference doc</div><div data-field="reference-doc"><a href="docs/fix_p1_shared_token_idx.html">fix_p1_shared_token_idx.html</a> retained as design note explaining the P1 control argument (used for paper rebuttal if reviewer asks "did you actually need the loss-side fix?").</div>
+          <div class="k">Code change</div><div data-field="code-change">None. The <code>shared_token_idx_per_video</code> CLI flag and the corresponding branch in <code>utils/data_utils.py:assign_tokens_per_video</code> are <b>not implemented</b>.</div>
         </div>
       </article>
     </section>
 
-    <section data-section="reviewers" id="reviewers" aria-label="Reviewer verdicts">
-      <article class="module-card" data-card="reviewer-verdicts">
-        <h2>Reviewer verdicts</h2>
-        <p class="card-text">One row per review focus (plan-clause match, metric correctness, runtime/provenance, code minimality, integration risk).</p>
-        <ul data-field="reviewer-list">
-          <li>unmeasured</li>
-        </ul>
-      </article>
-
-      <article class="module-card" data-card="integration-verdict">
-        <h2>Integration verdict</h2>
-        <p data-field="integration-verdict">unmeasured</p>
+    <!-- Implementation review table moved to tracker per page-3 canon (retire-dead-mirror rule) -->
+    <section data-section="impl-review-pointer" id="impl-review-pointer" aria-label="Implementation review (pointer)">
+      <article class="module-card pointer-card" data-card="impl-review-pointer">
+        <h2>Implementation review (pointer)</h2>
+        <p class="card-text">The 15-column implementation-review ledger now lives in <a href="tracker.html#implementation-review"><code>tracker.html#implementation-review</code></a> (agent zone). The mirror previously embedded here was retired per the page-3 canon retire-dead-mirror rule: implementation-review is single-home on <code>tracker.html</code>.</p>
       </article>
 
       <article class="module-card" data-card="adjudication" data-ack="ready-to-launch" data-ack-value="">
-        <h2>Decision adjudication</h2>
+        <h2>Decision adjudication (T1)</h2>
+        <p class="card-text">The integration verdict and per-change reviewer verdicts live in <a href="tracker.html#implementation-review">tracker / implementation review table</a>. The adjudication ack (T1) is recorded here as the package-level decision gate before READY_TO_LAUNCH.</p>
         <div class="kv-grid">
           <div class="k">Decision</div><div data-decision data-field="main-decision">unmeasured</div>
           <div class="k">Evidence used</div><div data-field="evidence-used">unmeasured</div>
           <div class="k">User ack (T1)</div><div data-field="user-ack">unmeasured</div>
         </div>
-        <p class="card-text">Full ledger row: <a href="tracker.html#implementation-review">tracker / implementation review table</a>. T1: do not move to READY_TO_LAUNCH without a recorded user ack here.</p>
+        <p class="card-text">T1: do not move to READY_TO_LAUNCH without a recorded user ack here.</p>
       </article>
     </section>
+
+    <!-- T8 hypothesis re-statement (string-equal to plan.html hypothesis) -->
+    <div data-hypothesis-restated style="display:none;" aria-hidden="true">H1: The loss-side fix is necessary; the cheap data-side fix (P1) would structurally degenerate to NLT=1-equivalent training — supported by diagnostic §2.5 + archived MSR-VTT E2.4F.1 (no F3 cell). H2 (primary gate): P3 + view-diversification bundle is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. H2-scale: same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — V cell.</div>
 
     <footer class="footer-note">
       <time data-field="last-updated" datetime="2026-05-24">2026-05-24</time>

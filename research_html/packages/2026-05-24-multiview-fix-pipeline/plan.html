@@ -19,48 +19,57 @@
 
     <nav class="package-nav" data-package-nav aria-label="Package pages"></nav>
 
-    <section data-section="hypothesis" id="hypothesis" aria-label="Hypothesis">
-      <article class="module-card" data-card="hypothesis">
-        <h2>Hypothesis (canonical, T19)</h2>
-        <p data-field="hypothesis-text" data-verification="recalled">H1: P3 all-slot CE supervision is necessary to exercise the multi-view encoder. H2: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for multi-view advantage to materialize at 500K scale. H3: P1 alone (pseudo siblings share real-caption <code>token_idx</code>) is insufficient (F3 control proves it: must reduce to baseline NLT=1 behavior).</p>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> H1/H1a → <a href="docs/fix_p3_allslot_ce.html#hypothesis">P3 — all-slot CE §3</a> &middot; H2 → <a href="docs/fix_view_diversification.html#hypothesis">view diversification §3</a> &middot; H3 → <a href="docs/fix_p1_shared_token_idx.html#hypothesis">P1 — shared token_idx §3</a> &middot; upstream foundation-cause evidence → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5</a></p>
-      </article>
-    </section>
-
-    <section data-section="metric" id="metric" aria-label="Primary metric and budget">
-      <article class="module-card" data-card="metric">
-        <h2>Primary metric</h2>
+    <!-- Objective Integrity Contract — typed slots (data-objective-field) -->
+    <section data-section="objective-contract" id="objective-contract" aria-label="Objective Integrity Contract">
+      <article class="module-card" data-card="objective-contract">
+        <h2>Objective Integrity Contract (T19, T3)</h2>
+        <p class="card-text">Frozen contract for this package. Fields typed with <code>data-objective-field</code> so <code>/research-op update --target results-verdict</code> can mechanically read <code>success.predicate</code> when promoting a verdict.</p>
         <div class="kv-grid">
-          <div class="k">Name</div><div data-field="metric-name">CanHit@100 at beam=100, code_length=3, model-3-fit, Panda 500K-subset test split (5694 test videos, identical to full-scale test)</div>
-          <div class="k">Formula</div><div data-field="metric-formula">CanHit@K = |{q : GT_video(q) ∈ dedup(sID_expand(beam_topK))(q)}| / |Q|</div>
-          <div class="k">Dataset</div><div data-field="metric-dataset">Panda 500K-subset test split (5694 test videos); fresh test-pool encode at eval time</div>
-          <div class="k">Protocol</div><div data-field="metric-protocol">beam=100 T5 generation → sID expansion (expand_sid_predictions_to_videos) → video-id dedup → take first 100; access_reorder_enabled=false (no BARS)</div>
-          <div class="k">Dedup rule</div><div data-field="metric-dedup">first-occurrence by raw video_id after sID expansion; preserves beam-rank order</div>
-          <div class="k">Cutoff</div><div data-field="metric-cutoff">top-100 after expand+dedup; budget-context column also reports avg_candidates_per_query (compact gate ≤ 310)</div>
-        </div>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> metric-in-action (broken run, beam=20/50/100 sweep) → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#final-results">diagnostic §6 candidate-export sweep</a> &middot; per-cell success criterion using CanHit@100 → <a href="docs/fix_p3_allslot_ce.html#code-change">P3 §4.4</a>, <a href="docs/fix_view_diversification.html#code-change">view diversification §4.5</a>, <a href="docs/fix_p1_shared_token_idx.html#code-change">P1 §4.4</a></p>
-      </article>
+          <div class="k">Hypothesis</div>
+          <div data-objective-field="hypothesis">
+            <p data-field="hypothesis-text" data-verification="recalled"><b>H1</b>: The loss-side fix is necessary; the cheap data-side fix (P1 shared <code>token_idx</code>) would structurally degenerate to NLT=1-equivalent training (3 dormant MLPs) — supported by <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5 truth-table row 3</a> + archived MSR-VTT E2.4F.1 cross-dataset evidence. (No F3 cell — see <a href="docs/fix_p1_shared_token_idx.html">P1 reference doc</a> for the argument.) <b>H2 (primary gate)</b>: P3 + view-diversification bundle (soft-weighted CE via <code>token_idx</code> + inter-slot orthogonality regularizer + per-slot k-means init at step 0 only; <b>SHARED 4096 codebook</b>) is sufficient for NLT=4 multi-view to beat NLT=1 baseline at 500K scale. <b>H2-scale</b>: the same winning recipe at full 2.15M beats production anchor (CanHit@100 = 95.57) — tested by V.</p>
+            <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> H1/H1a → <a href="docs/fix_p3_allslot_ce.html#hypothesis">P3 — all-slot CE §3</a> &middot; H2 → <a href="docs/fix_view_diversification.html#hypothesis">view diversification §3</a> &middot; H3 → <a href="docs/fix_p1_shared_token_idx.html#hypothesis">P1 — shared token_idx §3</a> &middot; upstream foundation-cause evidence → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#foundation-cause">diagnostic §2.5</a></p>
+          </div>
 
-      <article class="module-card" data-card="baseline">
-        <h2>Baseline (T11)</h2>
-        <div class="kv-grid">
-          <div class="k">Source</div><div data-field="baseline-source">B1 = NLT=1 + no-pseudo @ 500K (fresh full chain, same training recipe as fix variants); CanHit@100 to be measured on Day 1, becomes the gate value for F2 to beat (F3 is the control, expected to land near B1).</div>
-          <div class="k">Checkpoint</div><div data-field="baseline-checkpoint">pending — will be created by B1 cell on Day 1 at <code>var/research/2026-05-24-multiview-fix-pipeline/output/.../b1_nlt1_nopseudo/model-3-fit/best_model.pt</code></div>
-          <div class="k">Protocol</div><div data-field="baseline-protocol">NLT=1, no-pseudo, c=4096, l=3, full 3-loop chain (pretrain 1ep + main 1ep + fit 1ep × 3 loops); same lr schedule, batch size, and optimizer as fix variants (so the comparison is apples-to-apples)</div>
-          <div class="k">Last verified</div><div data-field="baseline-last-verified">pending B1 run on Day 1 (2026-05-24 or 2026-05-25)</div>
-        </div>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> B1 is the comparison anchor for the 500K fix cells — see each fix doc's hypothesis §3 for the predicted F&times; vs B1 delta: <a href="docs/fix_view_diversification.html#hypothesis">view diversification</a> &middot; <a href="docs/fix_p1_shared_token_idx.html#hypothesis">P1</a>. <b>The V cell's gate is the production 2.15M NLT=1 anchor</b> (<a href="../../../CLAUDE.md">CLAUDE.md / Current Best</a> = CanHit@100 95.57) &mdash; V trains the F2 winning recipe at 2.15M scale single-seed and must beat it.</p>
-      </article>
+          <div class="k">Metric formula</div>
+          <div data-objective-field="metric.formula">CanHit@K = |{q : GT_video(q) ∈ dedup(sID_expand(beam_topK))(q)}| / |Q|</div>
 
-      <article class="module-card" data-card="budget-gate">
-        <h2>Budget gate</h2>
-        <p data-field="budget-gate">avg_candidates_per_query ≤ 310 (compact gate per CLAUDE.md); CanHit@100 (winner) > B1 CanHit@100 single-seed full chain; sprint wall ≤ 3 days on workstation 2×A6000 + Bunya gpu_sxm 1×H100.</p>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> compute-budget reality + per-probe wall-time table → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html">diagnostic §2.5 F</a>. P3's expected step-time impact (~&lt;1.5×) → <a href="docs/fix_p3_allslot_ce.html#code-change">P3 §4.2 backward-graph cost callout</a>.</p>
+          <div class="k">Metric dataset</div>
+          <div data-objective-field="metric.dataset">Panda 500K-subset test split (5694 test videos, identical to full-scale test); fresh test-pool encode at eval time. Full name: CanHit@100 at beam=100, code_length=3, model-3-fit.</div>
+
+          <div class="k">Metric protocol</div>
+          <div data-objective-field="metric.protocol">beam=100 T5 generation → sID expansion (expand_sid_predictions_to_videos) → video-id dedup → take first 100; access_reorder_enabled=false (no BARS)</div>
+
+          <div class="k">Metric dedup</div>
+          <div data-objective-field="metric.dedup">first-occurrence by raw video_id after sID expansion; preserves beam-rank order</div>
+
+          <div class="k">Metric cutoff</div>
+          <div data-objective-field="metric.cutoff">top-100 after expand+dedup; budget-context column also reports avg_candidates_per_query (compact gate ≤ 310)</div>
+
+          <div class="k">Baseline checkpoint</div>
+          <div data-objective-field="baseline.checkpoint">pending — B1 cell trains on Day 1 at <code>var/research/2026-05-24-multiview-fix-pipeline/output/.../b1_nlt1_nopseudo/model-3-fit/best_model.pt</code></div>
+
+          <div class="k">Baseline protocol</div>
+          <div data-objective-field="baseline.protocol">NLT=1, no-pseudo, c=4096, l=3, full 3-loop chain (pretrain 1ep + main 1ep + fit 1ep × 3 loops); same lr schedule, batch size, and optimizer as fix variants (apples-to-apples)</div>
+
+          <div class="k">Baseline last verified</div>
+          <div data-objective-field="baseline.last-verified">pending B1 run on Day 1 (2026-05-24 or 2026-05-25)</div>
+
+          <div class="k">Budget</div>
+          <div data-objective-field="budget">avg_candidates_per_query ≤ 310; sprint wall ≤ 3 days on workstation 2×A6000 + Bunya gpu_sxm 1×H100</div>
+
+          <div class="k">Success predicate</div>
+          <div data-objective-field="success.predicate">F2 CanHit@100 &gt; B1 CanHit@100 single-seed full chain (H2 primary gate); V CanHit@100 &gt; production anchor 95.57 at 2.15M (H2-scale stretch)</div>
+
+          <div class="k">No-change boundary</div>
+          <div data-objective-field="no-change-boundary">models/video_rqvae/encoder.py (stays); trainer/evaluator.py (stays); reranker/xpool/*; data/video_dataset.py base path. In-scope: models/grdr.py:_forward_video (add all-slot path), trainer/trainer.py train_step (add all-slot CE branch), models/video_rqvae/vq.py:init_emb (add per-slot k-means init flag), run.py CLI flags, new scripts under research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/. Full list → <a href="implementation.html#owned-files">implementation / owned files</a>.</div>
+        </div>
+        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> metric-in-action (broken run, beam=20/50/100 sweep) → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html#final-results">diagnostic §6</a> &middot; per-cell success criterion → <a href="docs/fix_p3_allslot_ce.html#code-change">P3 §4.4</a>, <a href="docs/fix_view_diversification.html#code-change">view diversification §4.5</a>. B1 anchor for F2 → <a href="docs/fix_view_diversification.html#hypothesis">view diversification §3</a>. V gate is production 2.15M NLT=1 anchor (<a href="../../../CLAUDE.md">CLAUDE.md / Current Best</a> = CanHit@100 95.57).</p>
       </article>
 
       <article class="module-card" data-card="seed-plan">
         <h2>Seed plan</h2>
-        <p data-field="seed-plan">Single seed <code>s42</code> for every cell — including V. The 500K cells (B1/B2/B3/F2/F3) establish the apples-to-apples NLT=4 vs NLT=1 comparison; V then takes the F2 winning recipe and trains a <em>single</em> full-chain seed at <b>2.15M scale</b> on Bunya H100 to directly attempt the production anchor (CanHit@100 = 95.57). <b>Multi-seed validation is deferred to a follow-up package</b> &mdash; this sprint optimizes for "does the recipe scale up?" rather than "is the recipe stable across seeds?". If V wins, the next package runs 2 more seeds at 2.15M to satisfy the CLAUDE.md "Current Best" multi-seed requirement; if V loses, the recipe stays as a 500K-only result and 2.15M scale-up is reconsidered.</p>
+        <p data-field="seed-plan">Single seed <code>s42</code> for every cell — including V. The 500K cells (B1/B2/B3/F2) establish the apples-to-apples NLT=4 vs NLT=1 comparison; V then takes the F2 winning recipe and trains a <em>single</em> full-chain seed at <b>2.15M scale</b> on Bunya H100 to directly attempt the production anchor (CanHit@100 = 95.57). <b>Multi-seed validation is deferred to a follow-up package</b> &mdash; this sprint optimizes for "does the recipe scale up?" rather than "is the recipe stable across seeds?". If V wins, the next package runs 2 more seeds at 2.15M to satisfy the CLAUDE.md "Current Best" multi-seed requirement; if V loses, the recipe stays as a 500K-only result and 2.15M scale-up is reconsidered.</p>
         <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> V cell on the pipeline timeline (gate "CanHit@100 &gt; production anchor 95.57 at 2.15M scale") → <a href="#experiments">plan / experiments — V</a>. Multi-seed deferred to follow-up package — precedent for "single-seed first, multi-seed later" → <a href="../2026-05-16-panda-pseudo-queries-multiview/">diagnostic package</a> (single-seed s3407 was the only completed seed; s42/s220 stalled).</p>
       </article>
     </section>
@@ -69,18 +78,12 @@
       <article class="module-card" data-card="plan-diff">
         <h2>Diff vs prior plan (one sentence)</h2>
         <p data-field="plan-diff">First plan for this package. Supersedes the §5 P1/P2/P3 salvage probes of diagnostic <a href="../2026-05-16-panda-pseudo-queries-multiview/">2026-05-16-panda-pseudo-queries-multiview</a> by promoting them from "infeasible under that package's compute" to a full ablation matrix on the 500K subset (~4× cheaper than 2.15M per chain).</p>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> upstream probe definitions → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html">diagnostic §5 salvage probes</a>. Elevated to this package: <a href="docs/fix_p3_allslot_ce.html">P3 — all-slot CE</a> (foundation, bundled into F2), <a href="docs/fix_view_diversification.html">view diversification</a> (F2), <a href="docs/fix_p1_shared_token_idx.html">P1 — shared token_idx</a> (F3). P2 (per-slot k-means init) absorbed into view diversification §4.3. <b>F1 (P3 alone) dropped</b> — without view-diversification constraints the 4 MLPs predictably collapse to the same function; no information value vs ~15 h H100 cost.</p>
-      </article>
-
-      <article class="module-card" data-card="no-change-boundary">
-        <h2>No-change boundary (declared, T16)</h2>
-        <p data-field="no-change-boundary">models/video_rqvae/encoder.py (VideoLatentEncoder_V2 stays); models/video_rqvae/vq.py (single-slot VectorQuantizer stays); trainer/evaluator.py (eval paths stay); reranker/xpool/*; data/video_dataset.py base path. In-scope: models/grdr.py:_forward_video (add all-slot path), trainer/trainer.py train_step (add all-slot CE branch), models/video_rqvae/rq.py (add per-slot-codebook flag), utils/data_utils.py:assign_tokens_per_video (add shared-token_idx flag), run.py CLI flags, new scripts under research_html/packages/2026-05-24-multiview-fix-pipeline/scripts/.</p>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs (per in-scope edit):</b> <code>models/grdr.py:_forward_video</code> + <code>trainer/trainer.py</code> → <a href="docs/fix_p3_allslot_ce.html#code-change">P3 §4.1-4.2</a> &middot; <code>models/video_rqvae/rq.py</code> + <code>vq.py</code> argmin routing → <a href="docs/fix_view_diversification.html#code-change">view diversification §4.1-4.2</a> &middot; <code>utils/data_utils.py:assign_tokens_per_video</code> → <a href="docs/fix_p1_shared_token_idx.html#code-change">P1 §4.1</a> &middot; <code>run.py</code> CLI flags → all three docs §4.3-4.4 &middot; full owned-files list → <a href="implementation.html#owned-files">implementation / owned files</a>.</p>
+        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs:</b> upstream probe definitions → <a href="../2026-05-16-panda-pseudo-queries-multiview/docs/nlt4_pseudo_collapse_diagnostic.html">diagnostic §5 salvage probes</a>. Elevated to this package: <a href="docs/fix_p3_allslot_ce.html">P3 — all-slot CE</a> (foundation, bundled into F2), <a href="docs/fix_view_diversification.html">view diversification</a> (F2). P2 (per-slot k-means init) absorbed into view diversification §4.3. <a href="docs/fix_p1_shared_token_idx.html">P1 reference doc</a> retained as design note (no F3 cell — P1 alone structurally degenerates to NLT=1; supported by §2.5 + cross-dataset evidence). <b>Cells dropped</b>: F1 (P3 alone — without view-div constraints, 4 MLPs predictably collapse), F3 (P1 alone — by construction destroys multi-view, equivalent to NLT=1 + 3 dormant MLPs).</p>
       </article>
 
       <article class="module-card" data-card="run-conventions">
         <h2>Run conventions (global rules, package-wide)</h2>
-        <p data-field="run-conventions">Binding on every experiment in this package (P0, B1, B2, B3, F2, F3, S, V) and any follow-up cell added later:</p>
+        <p data-field="run-conventions">Binding on every experiment in this package (P0, B1, B2, B3, F2, S, V) and any follow-up cell added later:</p>
         <ol class="card-text" style="margin-top: 6px; padding-left: 20px;">
           <li><b>R-LOG: wandb required.</b> Every training and evaluation run must log key metrics to wandb (loss curves, CE/RQ/recon losses, codebook-usage diagnostics, eval CanHit@K, avg_candidates_per_query, throughput). No silent file-only runs. Launcher scripts must pass <code>--use_wandb</code> (or equivalent project flag) and set <code>--wandb_project</code> / <code>--wandb_run_name</code> to <code>2026-05-24-multiview-fix-pipeline / &lt;cell-id&gt;_s&lt;seed&gt;</code>. A run that crashes before its first wandb step counts as a failed launch and must be re-launched, not patched post-hoc.</li>
           <li><b>R-BUNYA-24H: interactive 24h allocation for on-node debugging.</b> Every Bunya cell (<code>compute: "bunya"</code> in inventory — currently F2, V; plus any future Bunya cell) must run inside an <b>interactive</b> <code>salloc</code> allocation of <code>--time=24:00:00</code> (gpu_sxm partition, qos=sxm). No <code>sbatch</code> for these cells during the workstation→Bunya transfer window. Rationale: the multi-view pipeline edits (all-slot CE, view-diversification bundle) are first-time-on-Bunya code paths; live shell access on the compute node is required for fast iteration on shape/dtype/oom issues without burning a fresh queue wait per fix. Parallel cells share a single 2-GPU allocation via <code>CUDA_VISIBLE_DEVICES=0/1</code> when SXM availability allows (see MEMORY: <i>Bunya H100 SXM interactive pattern</i>, <i>Pre-allocate Bunya GPU before need</i>).</li>
@@ -95,12 +98,12 @@
         <p class="card-text">Single home for per-experiment spec + status. Each node carries 5 written spec fields (<code>id</code>, <code>purpose</code>, <code>after</code>, <code>output</code>, <code>gate</code>) + 2 painted indicators (status chip, deep-link). Purpose is &le; 12 words leading with an action verb; gate is one measurable predicate; output is one key artifact. Full input/output schemas, sentinel format, code anchors, and commands live in <a href="docs/pipeline.html">docs/pipeline.html</a>; this slot mirrors the same <code>experiments[]</code> array that paints <a href="index.html#plan-status">overview / plan status</a>. Update inventory, not this slot. Hand-coded experiments tables on this page are forbidden (lint rule <code>plan-static-experiments-table</code>).</p>
         <ol class="pipeline-timeline" data-field="pipeline-timeline-list" aria-label="Pipeline phases"></ol>
         <p class="card-text"><em>Brainstorm or single-phase packages:</em> leave <code>experiments[]</code> empty (or with one node) and the timeline renders an empty-state. Do not replace this section with a static table.</p>
-        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs (per fix cell):</b> F2 (P3 + view diversification — primary fix) → <a href="docs/fix_view_diversification.html">view diversification</a> + <a href="docs/fix_p3_allslot_ce.html">P3 backbone</a> &middot; F3 (P1 control) → <a href="docs/fix_p1_shared_token_idx.html">P1 — shared token_idx</a> &middot; B1/B2/B3 baselines and P0/S/V → <a href="docs/index.html">docs index</a> (no fix-specific doc; recipes live in launcher scripts).</p>
+        <p class="card-text" style="font-family: var(--mono); font-size: 12.5px; color: var(--g600); margin-top: 8px;"><b style="color: var(--slate);">related docs (per fix cell):</b> F2 (P3 + view diversification — primary fix) → <a href="docs/fix_view_diversification.html">view diversification</a> + <a href="docs/fix_p3_allslot_ce.html">P3 backbone</a> &middot; B1/B2/B3 baselines and P0/S/V → <a href="docs/index.html">docs index</a> (no fix-specific doc; recipes live in launcher scripts). P1 control argument (no cell) → <a href="docs/fix_p1_shared_token_idx.html">P1 reference doc</a>.</p>
       </article>
     </section>
 
     <footer class="footer-note">
-      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (V cell repurposed: instead of 3-seed multi-seed @ 500K, V now trains the F2 winning config at full 2.15M scale, single seed s42, on Bunya H100. New gate: CanHit@100 > production anchor 95.57. Multi-seed validation deferred to a follow-up package. Earlier: F1 dropped — "P3 alone" predictably collapses without view-div. Hypotheses rewritten: H1 tests loss-side fix via F3 vs F2; H1a dropped. F2 redesigned to view-diversification bundle on shared 4096 codebook.)</time>
+      <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (F3 cell dropped — P1 alone on Panda structurally degenerates to NLT=1 + 3 dormant MLPs (k-means short-circuit), no info value vs ~10 h workstation cost. H1 now theoretically supported by §2.5 + MSR-VTT E2.4F.1; H3 removed. fix_p1_shared_token_idx.html retained as design-reference doc for paper rebuttal. Implementation owned-files shrunk: dropped utils/data_utils.py edit + --shared_token_idx_per_video flag + F3 launcher. Cells now: P0, B1, B2, B3, F2, S, V. Earlier: V repurposed to 2.15M single-seed gate. F1 dropped earlier. F2 view-diversification bundle on shared 4096 codebook.)</time>
     </footer>
   </div>
 
