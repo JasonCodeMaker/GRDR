@@ -26,7 +26,7 @@
           <div class="k">Current state</div><div data-workflow-state data-field="workflow-state">unmeasured</div>
           <div class="k">Active plan</div><div data-field="active-plan"><a href="plan.html">plan.html</a></div>
           <div class="k">Last action</div><div data-field="last-action">unmeasured</div>
-          <div class="k">Next action</div><div data-field="next-action"><a href="next-action.html">next-action.html</a></div>
+          <div class="k">Next action</div><div data-field="next-action"><a href="#chosen-route">chosen-route panel (below)</a></div>
           <div class="k">Runtime root</div><code data-artifact="runtime-root">artifacts/research/2026-05-24-multiview-fix-pipeline/</code>
           <div class="k">Open runs</div><div data-field="open-runs">See <a href="#run-cards">Per-run cards</a> below</div>
           <div class="k">Blocking issue</div><div data-field="blocking-issue">unmeasured</div>
@@ -40,7 +40,7 @@
         <p class="card-text">Each item links to the page that owns the action.</p>
         <p class="card-text">Each item links to the page that owns the action. Strict format: every <code>&lt;li&gt;</code> wraps its content in <code>&lt;label&gt;&lt;input type="checkbox"&gt; &hellip;&lt;/label&gt;</code>; add the <code>checked</code> attribute when the item is done.</p>
         <ul class="todo-checklist" data-field="todo-list">
-          <li><label><input type="checkbox"> unmeasured &mdash; <a href="next-action.html">next action</a></label></li>
+          <li><label><input type="checkbox"> unmeasured &mdash; <a href="#chosen-route">chosen route</a></label></li>
         </ul>
       </article>
     </section>
@@ -129,6 +129,45 @@
         </table>
       </article>
     </section>
+
+    <details data-audience="agent" data-section="chosen-route" id="chosen-route">
+      <summary>Chosen Route (next action)</summary>
+      <section aria-label="Chosen route">
+        <article class="module-card" data-card="chosen-route" data-ack="lane-transition" data-ack-value="">
+          <h2>Chosen route (T24) + lane-transition ack (T1)</h2>
+          <div class="kv-grid">
+            <div class="k">Route</div><div data-route data-field="chosen-route">Build Panda 500K subset (P0): scripts/build_500k_subset.py draws 500K video_ids from 2.15M source + slices matching pseudo addition JSON + pickle. Then smoke-test code changes (P3 all-slot CE flag, view-diversification flags: soft-weighted CE / orthogonality / per-slot init, shared-token_idx flag) on 100-video subset.</div>
+            <div class="k">Reason (one sentence)</div><div data-field="chosen-route-reason">P0 is the dependency root for every other cell — without the 500K subset + working CLI flags, no B1/B2/B3 baseline can launch on Day 1; smoke-test on 100 videos validates the code changes before committing 10h of full-chain wall.</div>
+            <div class="k">Evidence path</div><code data-artifact="chosen-route-evidence">packages/2026-05-24-multiview-fix-pipeline/plan.html#experiments — P0 row, after=[]</code>
+            <div class="k">User ack (T1)</div><div data-field="user-ack">pending — need ack on subset draw seed (s42 proposed), smoke-test scope (100 vids × 4 captions), and GPU 0 vs GPU 1 assignment given workstation occupancy by prior s3407 chain</div>
+          </div>
+          <p class="card-text">T1: do not move into success / fail / STOPPED without a recorded user ack here.</p>
+        </article>
+
+        <article class="module-card" data-card="considered-routes">
+          <h2>Considered routes</h2>
+          <table class="data-table" data-table="considered-routes">
+            <thead><tr><th>Route</th><th>Considered?</th><th>One-sentence reason</th><th>Evidence path</th></tr></thead>
+            <tbody data-table-body="considered-routes">
+              <tr><td data-route="run_next_experiment_from_step4">run_next_experiment_from_step4</td><td data-field="considered">YES (chosen)</td><td data-field="reason">P0 is the experiments[] root; nothing else can run until subset + flags are validated</td><td><code data-artifact="evidence-path">plan.html#experiments → P0</code></td></tr>
+              <tr><td data-route="fix_implementation">fix_implementation</td><td data-field="considered">no</td><td data-field="reason">no implementation has launched yet to fix</td><td><code data-artifact="evidence-path">n/a</code></td></tr>
+              <tr><td data-route="revise_plan">revise_plan</td><td data-field="considered">no</td><td data-field="reason">plan was just written from /brainstorming session 2026-05-24 with user approval; no new evidence yet</td><td><code data-artifact="evidence-path">plan.html (just authored)</code></td></tr>
+              <tr><td data-route="archive_or_stop">archive_or_stop</td><td data-field="considered">no</td><td data-field="reason">pre-launch; no experiments have produced a verdict</td><td><code data-artifact="evidence-path">n/a</code></td></tr>
+              <tr><td data-route="ask_user">ask_user</td><td data-field="considered">partial</td><td data-field="reason">T1 ack required before P0 launches — see chosen-route user-ack slot above</td><td><code data-artifact="evidence-path">tracker.html#chosen-route user-ack</code></td></tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="module-card" data-card="no-change-affirmation">
+          <h2>No-change affirmation (T16)</h2>
+          <div class="kv-grid">
+            <div class="k">Affirmed</div><div data-field="affirmed">pending — package just scaffolded; no edits to <a href="implementation.html#owned-files">owned files</a> yet. Affirmation will be recorded after P0 implementation lands and before B1 launches.</div>
+            <div class="k">Commit hash</div><code data-field="commit-hash">pending</code>
+            <div class="k">Owned files</div><div><a href="implementation.html#owned-files">implementation / owned files</a></div>
+          </div>
+        </article>
+      </section>
+    </details>
 
     <footer class="footer-note">
       <time data-field="last-updated" datetime="2026-05-24">2026-05-24 (launch-readiness gained R-LOG wandb ack + R-BUNYA-24H interactive-allocation ack rows; mirrors plan / run conventions)</time>
