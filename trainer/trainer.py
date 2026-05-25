@@ -272,7 +272,11 @@ class OurTrainer:
         bucket_sizes = None
         if loss_weights is not None:
             detach_video_route = bool(loss_weights.get('route_agree_stopgrad_video', False))
-            route_loss_enabled = (
+            # Route-pair scoring requires per-row [B, code_length, code_number]
+            # logits; the all-slot CE branch returns logits=None (per-slot logits
+            # are shape [B, N, L-1, C], incompatible with the route-loss formulation).
+            # Disable route losses when all-slot CE is on.
+            route_loss_enabled = (not multiview_all_slot_ce) and (
                 loss_weights.get('route_agree_loss', 0) != 0 or
                 loss_weights.get('bucket_route_loss', 0) != 0 or
                 loss_weights.get('video_rank_loss', 0) != 0 or
