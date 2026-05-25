@@ -51,6 +51,14 @@ VIEW_DIV_HIGH_W="${VIEW_DIV_HIGH_W:-0.7}"
 VIEW_DIV_LOW_W="${VIEW_DIV_LOW_W:-0.1}"
 SLOT_ORTHO_W="${SLOT_ORTHO_W:-0.1}"
 
+# K1 starts at loop 1 by default, reusing F2's loop 0 fit checkpoint.
+# The K-means inheritance fix (--codebook_seed_all_slots) only differs from F2
+# at the test_dr K-means seed step (after each loop's pretrain). Loop 0's
+# per_slot_init step-0 codebook init is identical between F2 and K1, so K1
+# can skip loop 0 entirely and inherit F2's model-1-fit.
+START_LOOP="${START_LOOP:-1}"
+INIT_CHECKPOINT="${INIT_CHECKPOINT:-}"
+
 EXP_NAME="${EXP_NAME:-k1_f2_kmeans_allslots_s${SEED}}"
 CANDIDATE_DIR="${CANDIDATE_DIR:-$RUNTIME_ROOT/candidates/$EXP_NAME}"
 WANDB_PROJECT="${WANDB_PROJECT:-$PACKAGE_ID}"
@@ -79,6 +87,13 @@ trap 'subset_swap_restore' EXIT
 train_k1() {
     log "train K1 F2 + codebook_seed_all_slots exp=$EXP_NAME"
     export WANDB_MODE WANDB_DIR WANDB_CACHE_DIR WANDB_CONFIG_DIR WANDB_CONSOLE=off
+    local resume_args=()
+    if [[ "$START_LOOP" -gt 0 ]]; then
+        [[ -n "$INIT_CHECKPOINT" ]] || { echo "[K1] ERROR: START_LOOP>0 needs INIT_CHECKPOINT" >&2; exit 2; }
+        [[ -f "$INIT_CHECKPOINT" ]] || { echo "[K1] ERROR: INIT_CHECKPOINT $INIT_CHECKPOINT not a file" >&2; exit 2; }
+        resume_args=(--start_loop "$START_LOOP" --init_checkpoint "$INIT_CHECKPOINT")
+        log "K1 resume: start_loop=$START_LOOP init_checkpoint=$INIT_CHECKPOINT"
+    fi
     python run.py \
         --device "$DEVICE" --model_name t5-small --dataset panda \
         --features_root "$FEATURES_ROOT" --cache_dir "$CACHE_DIR" \
@@ -101,7 +116,8 @@ train_k1() {
         --w2_cl_dd_loss "$W2_CL_DD_LOSS" --w2_rq_loss "$W2_RQ_LOSS" \
         --w3_ce_loss "$W3_CE_LOSS" --w3_code_loss "$W3_CODE_LOSS" --w3_rq_loss "$W3_RQ_LOSS" \
         --w3_bucket_route_loss "$W3_BUCKET_ROUTE_LOSS" --route_bucket_gamma "$ROUTE_BUCKET_GAMMA" \
-        --enable_fit
+        --enable_fit \
+        "${resume_args[@]}"
 }
 
 latest_checkpoint() {
