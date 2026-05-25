@@ -16,7 +16,10 @@ if [[ -d /scratch/project/openps ]] || [[ -n "${SLURM_JOB_ID:-}" ]]; then
     BUNYA_ENV_PATH="${BUNYA_ENV_PATH:-/scratch/project/openps/uqzzha35/conda/envs/grdr-stage1-gpu}"
     conda activate "$BUNYA_ENV_PATH"
     module load imkl/2025.1.0
-    export LD_LIBRARY_PATH="$BUNYA_ENV_PATH/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
+    # Order: env-lib (libstdc++.so.6.0.34 with GLIBCXX_3.4.30) + bundled cudart
+    # (faiss links against libcudart.so.13). System /lib64 libstdc++ is too old
+    # and there's no standalone cuda/13.0.0 module on Bunya.
+    export LD_LIBRARY_PATH="$BUNYA_ENV_PATH/lib:$BUNYA_ENV_PATH/lib/python3.12/site-packages/nvidia/cu13/lib:${LD_LIBRARY_PATH:-}"
     export PYTHONNOUSERSITE=1
 else
     source /data2/uqzzha35/miniconda3/etc/profile.d/conda.sh
