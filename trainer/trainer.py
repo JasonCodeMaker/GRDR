@@ -302,7 +302,9 @@ class OurTrainer:
                     default_size=loss_weights.get('route_bucket_default_size', 1.0)
                 )
 
-        if loss_weights is not None and loss_weights.get('route_agree_loss', 0) != 0:
+        # All four route_loss computations require [B, code_length, code_number]
+        # logits; vid_outputs.logits is None in the all-slot CE branch.
+        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('route_agree_loss', 0) != 0:
             route_agree_loss = OurTrainer.compute_route_agreement_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -312,7 +314,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and loss_weights.get('bucket_route_loss', 0) != 0:
+        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('bucket_route_loss', 0) != 0:
             bucket_route_loss = OurTrainer.compute_bucket_route_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -324,7 +326,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and loss_weights.get('video_rank_loss', 0) != 0:
+        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('video_rank_loss', 0) != 0:
             video_rank_loss = OurTrainer.compute_video_rank_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -336,7 +338,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and loss_weights.get('expanded_size_loss', 0) != 0:
+        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('expanded_size_loss', 0) != 0:
             expanded_size_loss = OurTrainer.compute_expanded_size_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
