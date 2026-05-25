@@ -67,7 +67,8 @@ mkdir -p "$LOG_DIR" "$CANDIDATE_DIR" "$SAVE_PATH" "$CACHE_DIR" "$WANDB_DIR" \
 cd "$ROOT"
 
 exec > >(tee -a "$FULL_LOG") 2>&1
-source /data2/uqzzha35/miniconda3/etc/profile.d/conda.sh
+# Environment-aware conda activation (workstation vs Bunya compute node).
+source "$SCRIPT_DIR/_conda_activate.sh"
 export PYTHONDONTWRITEBYTECODE=1
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
 
@@ -77,7 +78,6 @@ trap 'subset_swap_restore' EXIT
 
 train_k1() {
     log "train K1 F2 + codebook_seed_all_slots exp=$EXP_NAME"
-    conda activate semantictvr
     export WANDB_MODE WANDB_DIR WANDB_CACHE_DIR WANDB_CONFIG_DIR WANDB_CONSOLE=off
     python run.py \
         --device "$DEVICE" --model_name t5-small --dataset panda \
@@ -102,7 +102,6 @@ train_k1() {
         --w3_ce_loss "$W3_CE_LOSS" --w3_code_loss "$W3_CODE_LOSS" --w3_rq_loss "$W3_RQ_LOSS" \
         --w3_bucket_route_loss "$W3_BUCKET_ROUTE_LOSS" --route_bucket_gamma "$ROUTE_BUCKET_GAMMA" \
         --enable_fit
-    conda deactivate
 }
 
 latest_checkpoint() {
@@ -112,7 +111,6 @@ latest_checkpoint() {
 
 export_one_beam() {
     local checkpoint_path="$1"; local beam="$2"
-    conda activate semantictvr
     python run.py \
         --eval --device "$DEVICE" --model_name t5-small --dataset panda \
         --features_root "$FEATURES_ROOT" --cache_dir "$CACHE_DIR" \
@@ -123,7 +121,6 @@ export_one_beam() {
         --eval_checkpoint "$checkpoint_path" --candidate_output_dir "$CANDIDATE_DIR" \
         --save_path "$SAVE_PATH" --exp_name "${EXP_NAME}_beam${beam}" \
         --wandb_project "$WANDB_PROJECT" --wandb_run_name "${WANDB_RUN_NAME}_beam${beam}"
-    conda deactivate
 }
 
 export_beams() {
