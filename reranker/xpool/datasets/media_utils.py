@@ -41,6 +41,7 @@ def resolve_media_root(dataset_name: str, media_root: str) -> str:
         ]
     elif dataset_name == 'ACTNET':
         candidates = [
+            media_root.replace('Activity_Videos', 'Activity_Frames_224x224'),
             media_root.replace('Activity_Videos', 'Activity_Frames'),
             media_root,
         ]
@@ -52,6 +53,7 @@ def resolve_media_root(dataset_name: str, media_root: str) -> str:
         ]
     elif dataset_name == 'LSMDC':
         candidates = [
+            media_root.replace('LSMDC_Videos', 'LSMDC_Frames_224x224'),
             media_root.replace('LSMDC_Videos', 'LSMDC_Frames_256'),
             media_root,
         ]
@@ -82,11 +84,13 @@ def resolve_media_path(dataset_name: str, media_root: str, video_id: str, split_
         split_roots = []
         if split == 'train':
             split_roots.extend([
+                os.path.join(media_root, 'train_frame_224x224'),
                 os.path.join(media_root, 'train_frame'),
                 os.path.join(media_root, 'train', 'videos'),
             ])
         else:
             split_roots.extend([
+                os.path.join(media_root, 'test_frame_224x224'),
                 os.path.join(media_root, 'test_frame'),
                 os.path.join(media_root, 'test', 'test_videos'),
             ])

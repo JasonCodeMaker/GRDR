@@ -50,6 +50,7 @@ Before proposing or extending any new research idea, run a self-review first.
 - For inference/export changes, minimize per-query latency while preserving metric correctness. Reuse online generation outputs and offline caches where possible; do not add per-candidate T5 teacher-forcing or direct video-ANN search to the default inference path unless explicitly approved as an offline diagnostic.
 - In research plans, call the ordered run/ablation section `Experiments List`, not `Decision Tree`.
 - Do not pre-estimate run duration. `plan.html` rows, launcher manifests, allocation rows, and live-check rows record `est_time=unknown` until the run has executed at least 30 minutes of stable throughput; after that, derive ETA from observed throughput and update on every 10-minute report.
+- When a request spans multiple cells (e.g., Setting 1 + Setting 2, P1.a + P1.b, multi-dataset zero-shot transfer, beam-width sweeps), run every cell in scope before reporting back. State the full cell list at session start, update `results.html` and the canonical CSV incrementally as each cell finalizes, and list any skipped cells with explicit reason at close.
 
 ## Refinement Guardrails
 
@@ -74,12 +75,11 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 
 ## Research Output Contract
 
-- The only valid in-repo location for new research material is `research/active/<YYYY-MM-DD>-<slug>/`.
-- Every research package must contain `README.md`, `plan.html`, `tracker.html`, `results.html`, plus `docs/` and `scripts/`.
-- Use `bash scripts/dev/new_research.sh <slug>` to create research packages; do not create ad hoc top-level research folders outside `research/`.
-- Runtime state, supervisor JSON, local logs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
-- When a research theme is complete or paused, move the whole package to `research/archive/<YYYY-MM-DD>-<slug>/`.
-- Stable shared entrypoints stay in `scripts/`; one-off experiment scripts belong in the owning research package.
+- The only valid in-repo location for a new research package is `research_html/packages/<YYYY-MM-DD>-<slug>/`. Use the `/research-package` skill to scaffold; do not create ad-hoc top-level research folders.
+- Every package owns one decision per page: `index.html`, `plan.html`, `tracker.html`, `results.html`, `next-action.html`, plus `docs/`, `scripts/`, and `_agent/`.
+- Package-owned scripts (launchers, eval drivers, sentinel writers, one-off ablations) live under `research_html/packages/<id>/scripts/`. Stable shared entrypoints stay in repo-root `scripts/`.
+- Runtime state, supervisor JSON, local logs, candidate JSONs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
+- Legacy `research/active/` and `research/archive/` directories are retained for pre-2026-05-11 packages only; do not add new content there.
 
 ## Research Doc Style
 
@@ -96,6 +96,23 @@ Any new HTML doc under `research_html/packages/<pkg-id>/docs/` MUST start from t
 - Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.
 - Prefer named `tmux` sessions/windows and report the attach command so the run can be monitored live.
 - Enforce the Fact Propagation Contract on every per-turn live cycle: between the tracker live-check update and the §5 status line, run `python research_html/packages/<pkg-id>/scripts/propagate_facts.py`; for each event listed in the report, update its owning surfaces (`results.html`, `next-action.html`, `research_html/data/research-packages.js`, tracker Resume Block) in the same turn, then advance the cursor with `propagate_facts.py --bump`. A non-empty report at the Stop Gate is a workflow violation.
+
+### Background job hygiene
+
+- Never spawn background processes with a trailing `&` from a `Bash run_in_background` call; the wrapper will self-detach and lose its status writer. Restructure the script to use an internal `sleep` loop instead.
+- Polling for job completion must match on actual file state (sentinel file existence, output size, `sacct` State, exit code) — never on the echoed command string in a log tail, which false-matches as soon as the launcher prints the command it is about to run.
+- `pgrep`-based liveness checks must require **N consecutive negatives** before declaring the process dead, to avoid the kill-then-relaunch race during fork.
+- For any parallel CPU workload (numpy / faiss / sklearn / multiprocessing), prefix the launch with `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`. Benchmark 1-worker vs N-worker on a small slice before scaling; if N-worker is not >1.5× faster, do not fan out.
+- Launch wrappers must not use `set -e` around the sentinel-write step — an upstream failure must still flush the return-code sentinel so polling sees a terminal state.
+
+## Verification Discipline
+
+Lint passing is necessary but not sufficient to declare a task complete. Before reporting any artifact-producing task as done:
+
+- Enumerate the full scope up front. For multi-cell / multi-setting work (Setting 1 + Setting 2, dataset × beam × seed grids, P1.a + P1.b style sub-stages), list every cell that must complete and check each off explicitly. Do not stop after the first cell.
+- Render the artifact and verify visible state matches intent. For HTML packages: confirm `next-action.html` is closed, `tracker.html` agent-zone collapses are closed by default, no intended content is hidden inside an unexpanded `<details>` block, and every referenced file resolves.
+- For code changes affecting training/eval: run the narrowest available check (single-cell smoke, single-seed eval, lint) and confirm the change does not regress the existing behavior; if no automated check exists, state explicitly why prior behavior should remain unchanged.
+- Surgical changes only. If a second edit seems needed beyond the requested scope, surface it as a question — do not silently fold it in.
 
 ## Learnings Update Protocol
 
@@ -131,17 +148,6 @@ Every row is exactly six fields, drawn verbatim from the witnessing `results.htm
 - N upstream result-gate rows may collapse to 1 `methodsTried` row when they share a method (e.g., a 9-cell sweep summarized as one entry that links to the cell-level data). Prefer aggregation; do not let `methodsTried[]` mirror the full result-gate table.
 - Single-seed `pass` is `inconclusive` until the gate's seed requirement is met.
 
-### Atomic per-turn closure
-
-When any event above fires, the same turn writes all four surfaces (or it doesn't write at all):
-
-1. **Upstream witness** — `results.html` row, `next-action.html` chosen-route, or whichever surface owns the source of truth. Must exist with a stable anchor before step 2.
-2. **`research_html/data/research-packages.js`** — the canonical row (append `methodsTried` for E1; update top-level fields for E2; update terminal fields for E3–E6).
-3. **`research_html/packages/<id>/tracker.html`** — Resume Block `lastAction` = one-line description of the write (e.g., `"2026-05-12 added methodsTried[BARS_cap350] (verdict=fail)"`).
-4. **Lint** — run `python research_html/scripts/learnings_lint.py lint-status` and `… lint-evidence`. A non-empty report at the Stop Gate is a workflow violation.
-
-`learnings.html` is not in this list — it re-derives on load. Do not edit `learnings.html` directly.
-
 ### The dashboard-wide tool: `research_html/scripts/learnings_lint.py`
 
 Single Python entry point that enforces this protocol across all packages. Reads `data/schema.js` + `data/research-packages.js` via the bundled `dump_packages.js` (node) helper. Subcommands:
@@ -159,13 +165,15 @@ Add `--strict` to make warnings count toward the exit code (used by CI).
 
 ### Stop-Gate sequence (the contract for every learnings-relevant turn)
 
-1. Make the upstream-witness edit (results.html / next-action.html / tracker.html / etc.).
-2. Update `research_html/data/research-packages.js`.
-3. Update tracker Resume Block `lastAction`.
-4. Run `python research_html/scripts/learnings_lint.py all`. Fix every error before closing the turn.
+Atomic per-turn closure: when any event above fires, the same turn touches all four surfaces or none.
+
+1. **Upstream witness** — make the edit on the source-of-truth surface (`results.html` row, `next-action.html` chosen-route, etc.) with a stable anchor.
+2. **`research_html/data/research-packages.js`** — append `methodsTried` (E1) or update top-level / terminal fields (E2–E6).
+3. **`research_html/packages/<id>/tracker.html`** — Resume Block `lastAction` = one-line description of the write (e.g., `"2026-05-12 added methodsTried[BARS_cap350] (verdict=fail)"`).
+4. **Lint** — run `python research_html/scripts/learnings_lint.py all`; fix every error before closing the turn. A non-empty report at the Stop Gate is a workflow violation.
 5. If the turn includes a terminal status transition (E3–E6), confirm user ack is in hand.
 
-The `scan-events` output should be reviewed every time a package's `results.html` or `next-action.html` changes — it tells the agent *which* draft writes the current state implies.
+`learnings.html` is not in this list — it re-derives on load; do not edit it directly. The `scan-events` output should be reviewed every time `results.html` or `next-action.html` changes — it tells the agent *which* draft writes the current state implies.
 
 ### Recovery: stale or wrong rows
 
@@ -234,8 +242,6 @@ python -c "from graphify.watch import _rebuild_code; from pathlib import Path; _
 ```
 This only re-extracts changed files (AST-only for code, no LLM cost).
 
-### Key graph facts (as of 2026-04-08)
-- 1147 nodes, 2246 edges, 30 communities
-- God nodes: Config (89 edges), T5Config (89), MLPLayers (70), VideoCapture (61), GRDR (45)
-- The GRDR trainer intentionally reuses X-Pool's BaseTrainer and CandidateDataLoader
-- Config is the main cross-community bridge (links datasets, evaluator, trainer, inference sim, CLIP transformer)
+### Key graph facts (durable)
+- The GRDR trainer intentionally reuses X-Pool's `BaseTrainer` and `CandidateDataLoader`.
+- `Config` is the main cross-community bridge (links datasets, evaluator, trainer, inference sim, CLIP transformer); expect it to appear as a god-node hub when querying the graph.

@@ -29,8 +29,7 @@ class VideoRQVAE_V2(nn.Module):
                  diversity_loss_weight=0.0,   # Weight for latent token diversity loss
                  contrastive_temperature=0.07,  # Temperature for InfoNCE contrastive loss
                  vid_loss_weight=None,        # Array [mse, l1, cosine] weights
-                 text_alignment_dim=None,      # Output dimension for text alignment projector
-                 per_slot_init=False           # F2 mech (c): N independent k-means at codebook init
+                 text_alignment_dim=None       # Output dimension for text alignment projector
         ):
         super(VideoRQVAE_V2, self).__init__()
 
@@ -90,8 +89,6 @@ class VideoRQVAE_V2(nn.Module):
             sk_iters=sk_iters,
             use_linear=use_linear,
             beta=beta,
-            per_slot_init=per_slot_init,
-            num_latent_tokens=num_latent_tokens,
         )
 
         self.decode_layer_dims = self.encode_layer_dims[::-1]

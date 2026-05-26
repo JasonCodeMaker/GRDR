@@ -46,6 +46,26 @@ build operating understanding and context dossier
    -> STOPPED for achieved goal or archive/stop
 ```
 
+## Mutation Rule (binding)
+
+Every mutation to a research-package surface (HTML files, inventory entry, doc files) MUST go through `/research-op`. Direct `Edit` / `Write` on package files is a workflow violation. The only exceptions are: (a) `/research-package` / `/research-dashboard` at scaffold time, and (b) the user typing in their editor outside the agent. `/research-op` enforces the `(category, status, op, target)` legality matrix and per-target invariants before any byte hits disk; on reject the agent reads the structured envelope and retries with the rule visible.
+
+The invocation interface is:
+
+```bash
+# Primitive ops
+python skills/research-op/scripts/research_op.py --pkg <id> --op insert --target <target> --payload '{...}'
+python skills/research-op/scripts/research_op.py --pkg <id> --op update --target <target> --payload '{...}'
+python skills/research-op/scripts/research_op.py --pkg <id> --op delete --target <target> --payload '{...}'
+python skills/research-op/scripts/research_op.py --pkg <id> --op check --scope all
+python skills/research-op/scripts/research_op.py --pkg <id> --op scan-events
+
+# Composite events (atomic fan-out)
+python skills/research-op/scripts/research_op.py --pkg <id> --event <event-name> --payload '{...}'
+```
+
+Audit trail: every op invocation (success or reject) appends one line to `var/research/<pkg>/_actions.jsonl`.
+
 ## Shared Agent Return Contract
 
 Every subagent returns a compact report that gives the main agent evidence without forcing it to redo bounded work.
@@ -319,16 +339,16 @@ Live check table update is mandatory and strict:
 | Phase marker (`--- P` / `### P` in chain log) | `tracker.html` live-check + `tracker.html` resource-allocation Status + registry `experiments[i].status` (`queued` → `running`, or `running` → `completed`/`failed`) + to-do tick for closed phase |
 | Chain done (`=== … done ===`) | `results.html` final tables + verdict chips + `next-action.html` route + registry `nextRoute`/`openRuns` + registry `experiments[i].status` for every phase the chain closed + tracker Resume Block + to-do |
 
-The contract is enforced mechanically by `propagate_facts.py` (skill-shipped, copied into every package's `scripts/`). Each per-turn algorithm includes a **Step 3.5 — Propagation pass** between the tracker live-check update and the §5 status line:
+The contract is enforced mechanically by `/research-op scan-events` (artifact detection) + `/research-op event <name>` (atomic fan-out). Each per-turn algorithm includes a **Step 3.5 — Propagation pass** between the tracker live-check update and the §5 status line:
 
 ```text
-3.5. Run `python scripts/propagate_facts.py`. For every event listed in its report,
-     apply the indicated update to its owning surfaces in this same turn. After all
-     surfaces accept, run `propagate_facts.py --bump` to advance the cursor. An empty
+3.5. Run `python skills/research-op/scripts/research_op.py --pkg <id> --op scan-events`.
+     For every event the scanner emits, invoke `--event <name> --payload <json>` so
+     research-op fans out atomically through Pattern B validation. An empty scanner
      report is the only valid reason to skip.
 ```
 
-Skipping Step 3.5 while the report is non-empty is a workflow violation equivalent to skipping the live-check row update. The Stop Gate (§ Stop Gate below) also requires `propagate_facts.py` to be empty before `STOPPED` is allowed.
+Skipping Step 3.5 while the report is non-empty is a workflow violation equivalent to skipping the live-check row update. The Stop Gate (§ Stop Gate below) also requires `/research-op scan-events` to return an empty report before `STOPPED` is allowed.
 
 Loop continuity: while any run is `queued`, `running`, or `stale`, the main agent must either be actively processing events or have a scheduled re-entry due within 10 minutes (`ScheduleWakeup(delaySeconds<=600)`, `Monitor` filtered on the run's stdout, or `Bash run_in_background` waiting on a terminal condition). Ending a turn while a run is open without an armed re-entry is a workflow violation. On every re-entry, emit one compact §5 status line per open experiment to the user before reasoning about the next action.
 
@@ -422,5 +442,5 @@ You may end the current execution only in `BLOCKED` or `STOPPED`. Before ending:
 - `results.html` has completed evidence if a run finished
 - runtime artifacts are located or missing artifacts are recorded
 - no open run is untracked
-- `propagate_facts.py` returns an empty report (cursor advanced past every artifact mtime); a non-empty report at the Stop Gate is a workflow violation
+- `/research-op scan-events` returns an empty report (cursor advanced past every artifact mtime); a non-empty report at the Stop Gate is a workflow violation
 - if any run is still `queued` / `running` / `stale`, a re-entry is armed (`ScheduleWakeup` <= 600 s, `Monitor`, or background `Bash`); ending without an armed re-entry is a violation, not a clean end. The correct end-of-turn shape during the loop is one compact §5 status line per open experiment followed by the schedule call — not a written summary.

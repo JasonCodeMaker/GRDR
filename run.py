@@ -105,22 +105,11 @@ def parse_args():
     parser.add_argument('--num_latent_tokens', type=int, default=4,
                        help='Number of latent tokens in VideoRQVAE')
 
-    # Multi-view fix pipeline flags (research_html/packages/2026-05-24-multiview-fix-pipeline)
-    parser.add_argument('--multiview_all_slot_ce', action='store_true', default=False,
-                       help='P3 fix: supervise every slot of the multi-view encoder under CE '
-                            '(see docs/fix_p3_allslot_ce.html)')
-    parser.add_argument('--view_div_high_weight', type=float, default=0.0,
-                       help='F2 mech (a): CE weight on token_idx-routed slot. F2 default 0.7; '
-                            '0.0 disables soft routing (P3 uniform 1/N).')
-    parser.add_argument('--view_div_low_weight', type=float, default=0.0,
-                       help='F2 mech (a): CE weight on non-routed slots (sum). F2 default 0.1.')
-    parser.add_argument('--slot_orthogonality_weight', type=float, default=0.0,
-                       help='F2 mech (b): inter-slot orthogonality regularizer lambda. F2 default 0.1.')
-    parser.add_argument('--per_slot_init', action='store_true', default=False,
-                       help='F2 mech (c): N independent k-means at step 0; codebook stays SHARED.')
-    parser.add_argument('--codebook_seed_all_slots', action='store_true', default=False,
+    # Multi-view fix pipeline (research_html/packages/2026-05-24-multiview-fix-pipeline)
+    # K1 path is now the default; ablate via --no-codebook_seed_all_slots.
+    parser.add_argument('--codebook_seed_all_slots', action=argparse.BooleanOptionalAction, default=True,
                        help='K1: at every loop boundary, run faiss-GPU k-means on '
-                            '[num_videos x N, D] features (dedup + return_all).')
+                            '[num_videos x N, D] features (dedup + return_all). Default on.')
 
     # Evaluation arguments
     parser.add_argument('--eval', action='store_true', default=False, help='Evaluate the model')
@@ -137,10 +126,13 @@ def parse_args():
                        help='Setting 2 only: if >0, deterministically subsample N train videos (seed fixed=42) before merging with test; 0 = use full train pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
-    parser.add_argument('--inference_reorder_by_access_score', action='store_true', default=False,
-                       help='Reorder expanded candidates with BARS beam score plus bucket penalty')
-    parser.add_argument('--access_score_bucket_gamma', type=float, default=0.0,
-                       help='Bucket-size penalty weight for BARS reorder')
+    # BARS reorder is the canonical evaluation strategy (research_html/packages/
+    # 2026-05-15-panda-baselines + 2026-05-16-panda-pseudo-queries-multiview).
+    # Default ON for every eval; disable via --no-inference_reorder_by_access_score.
+    parser.add_argument('--inference_reorder_by_access_score', action=argparse.BooleanOptionalAction, default=True,
+                       help='Reorder expanded candidates with BARS beam score plus bucket penalty. Default on.')
+    parser.add_argument('--access_score_bucket_gamma', type=float, default=0.50,
+                       help='Bucket-size penalty weight for BARS reorder. Canonical default 0.50.')
     parser.add_argument('--candidate_handoff_cap', type=int, default=0,
                        help='If >0, cap the final candidate JSON to this many videos per query after optional BARS reorder')
     parser.add_argument('--candidate_output_dir', type=str, default='candidates',

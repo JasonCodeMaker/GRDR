@@ -149,7 +149,7 @@ class GRDR(nn.Module, GenerationMixin, ABC):
     def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None, aux_ids=None,
                 video_features=None, token_idx=None, return_code=False, return_quantized_embedding=False,
                 use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False,
-                return_all_slots=False, **kwargs):
+                **kwargs):
         """
         Dual-path forward:
         - Query path (input_ids provided): Use T5 encoder -> project to code space
@@ -159,8 +159,7 @@ class GRDR(nn.Module, GenerationMixin, ABC):
 
         # Video path: video features -> VideoRQVAE
         if video_features is not None:
-            # P3/K1 alias: return_all_slots is the trainer-facing name; reuse return_all branch.
-            return self._forward_video(video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer, return_all or return_all_slots)
+            return self._forward_video(video_features, token_idx, use_constraint, return_quantized_embedding, return_residual_layer, return_all)
 
         # Query path: text tokens -> T5 encoder -> code projection
         # Also handles encoder_outputs (from beam search subsequent steps)
@@ -188,9 +187,8 @@ class GRDR(nn.Module, GenerationMixin, ABC):
         )
 
         # If return_all, skip token selection and return all latent tokens.
-        # P3 (multiview_all_slot_ce) + K1 (codebook_seed_all_slots) require per-slot
-        # discrete_codes / probability / code_logits, so compute them here from the
-        # full `distances` tensor list (each entry is [B, N, code_number]).
+        # K1 (codebook_seed_all_slots) calls our_encode_dual with return_all=True
+        # so the loop-boundary k-means seed sees explicit per-slot signal.
         if return_all:
             video_decoded_features, reconstructed_features = self.video_rqvae.decoder(video_quantized_features)
 

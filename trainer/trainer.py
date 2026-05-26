@@ -109,11 +109,6 @@ class OurTrainer:
         - video_ids: List[str] unique video identifiers (e.g., video7015_0)
         - token_idx: [B] k-means assigned token indices
         """
-        # P3 fix: all-slot CE branch
-        multiview_all_slot_ce = bool(
-            loss_weights is not None and loss_weights.get('multiview_all_slot_ce', False)
-        )
-
         # Video path: video features -> VideoRQVAE with token selection
         video_features = batch['video_features']
         vid_outputs: VideoOutput = model(
@@ -124,7 +119,6 @@ class OurTrainer:
             return_code=True,
             return_quantized_embedding=True,
             return_residual_layer= model.code_length if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.module.code_length - 1,
-            return_all_slots=multiview_all_slot_ce
         )
 
         # Query path: text caption -> T5 encoder
@@ -153,55 +147,16 @@ class OurTrainer:
         else:
             code_number = model.code_number
 
-        # Contrastive loss: query vs doc (use slot-mean over N when in all-slot branch
-        # so vid_embeds is [B, D]; preserves the existing contrastive contract)
-        if multiview_all_slot_ce and vid_embeds.dim() == 3:
-            cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds.mean(dim=1), gathered=False)
-        else:
-            cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds, gathered=False)
+        # Contrastive loss: query vs doc
+        cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds, gathered=False)
 
         # Video Reconstruction Loss
         L2_video_features = F.normalize(video_features.detach(), p=2, dim=-1, eps=1e-12)
         L2_recon_video_features = F.normalize(recon_video_features, p=2, dim=-1, eps=1e-12)
         cl_dd_loss = (1 - F.cosine_similarity(L2_video_features, L2_recon_video_features, dim=-1)).mean()
 
-        if multiview_all_slot_ce:
-            # codes_vid: [B, N]; query_prob: [B, code_number]
-            view_div_high_w = loss_weights.get('view_div_high_weight', 0.0)
-            view_div_low_w = loss_weights.get('view_div_low_weight', 0.0)
-            N = codes_vid.size(1)
-            token_idx_b = batch['token_idx']
-            if view_div_high_w > 0.0 or view_div_low_w > 0.0:
-                # F2 mech (a): soft per-row routing peaked at token_idx
-                slot_weights = torch.full(
-                    (codes_vid.size(0), N),
-                    view_div_low_w / max(N - 1, 1),
-                    device=codes_vid.device,
-                    dtype=query_prob.dtype,
-                )
-                slot_weights.scatter_(1, token_idx_b.unsqueeze(1), view_div_high_w)
-                slot_weights = slot_weights / slot_weights.sum(dim=1, keepdim=True).clamp_min(1e-12)
-            else:
-                # Uniform 1/N (pure P3, no view-div soft routing)
-                slot_weights = torch.full(
-                    (codes_vid.size(0), N),
-                    1.0 / N,
-                    device=codes_vid.device,
-                    dtype=query_prob.dtype,
-                )
-
-            ce_loss = 0.0
-            for t in range(N):
-                per_row = F.cross_entropy(
-                    query_prob,
-                    codes_vid[:, t].detach(),
-                    label_smoothing=0.1,
-                    reduction='none',
-                )
-                ce_loss = ce_loss + (per_row * slot_weights[:, t]).mean()
-        else:
-            # Commitment loss: query should predict video sID codes
-            ce_loss = F.cross_entropy(query_prob, codes_vid.detach(), label_smoothing=0.1)
+        # Commitment loss: query should predict video sID codes
+        ce_loss = F.cross_entropy(query_prob, codes_vid.detach(), label_smoothing=0.1)
 
         # Code prediction loss (multi-layer)
         code_loss = 0
@@ -224,39 +179,13 @@ class OurTrainer:
                 prior_codes
             )
 
-            if multiview_all_slot_ce and vid_outputs.code_logits.dim() == 4:
-                # vid code logits: [B, N, n_pred, code_number]; average per-slot CE
-                N_slots = vid_outputs.code_logits.size(1)
-                prior_codes_expanded = batch['ids'][:, 1:1 + n_pred].contiguous()
-                vid_code_loss = 0.0
-                for t in range(N_slots):
-                    vid_code_loss = vid_code_loss + F.cross_entropy(
-                        vid_outputs.code_logits[:, t].reshape(-1, code_number),
-                        prior_codes_expanded.reshape(-1)
-                    )
-                vid_code_loss = vid_code_loss / N_slots
-            else:
-                # Video-side code loss (prevent code drift during progressive training)
-                vid_code_loss = F.cross_entropy(
-                    vid_outputs.code_logits.view(-1, code_number),
-                    prior_codes
-                )
+            # Video-side code loss (prevent code drift during progressive training)
+            vid_code_loss = F.cross_entropy(
+                vid_outputs.code_logits.view(-1, code_number),
+                prior_codes
+            )
 
             code_loss = query_code_loss + vid_code_loss
-
-        # F2 mech (b): inter-slot orthogonality regularizer. Emit as its own loss
-        # key so the trainer's loss-weight loop multiplies it by
-        # `slot_orthogonality_weight` regardless of the phase (folding it into
-        # cl_dd_loss silenced ortho in the fit phase where w3_cl_dd_loss=0).
-        slot_ortho_loss = 0
-        if multiview_all_slot_ce and vid_embeds.dim() == 3:
-            slot_feats = F.normalize(vid_embeds, dim=-1, eps=1e-12)
-            sim = torch.matmul(slot_feats, slot_feats.transpose(-1, -2))  # [B, N, N]
-            N_s = sim.size(-1)
-            eye = torch.eye(N_s, device=sim.device, dtype=sim.dtype).unsqueeze(0)
-            off_diag = (sim - eye).abs()
-            ortho_loss = off_diag.sum(dim=(-1, -2)) / max(N_s * (N_s - 1), 1)
-            slot_ortho_loss = ortho_loss.mean()
 
         # VideoRQVAE quantization loss
         rq_loss = vid_outputs.rq_loss if vid_outputs.rq_loss is not None else 0
@@ -272,11 +201,7 @@ class OurTrainer:
         bucket_sizes = None
         if loss_weights is not None:
             detach_video_route = bool(loss_weights.get('route_agree_stopgrad_video', False))
-            # Route-pair scoring requires per-row [B, code_length, code_number]
-            # logits; the all-slot CE branch returns logits=None (per-slot logits
-            # are shape [B, N, L-1, C], incompatible with the route-loss formulation).
-            # Disable route losses when all-slot CE is on.
-            route_loss_enabled = (not multiview_all_slot_ce) and (
+            route_loss_enabled = (
                 loss_weights.get('route_agree_loss', 0) != 0 or
                 loss_weights.get('bucket_route_loss', 0) != 0 or
                 loss_weights.get('video_rank_loss', 0) != 0 or
@@ -302,9 +227,7 @@ class OurTrainer:
                     default_size=loss_weights.get('route_bucket_default_size', 1.0)
                 )
 
-        # All four route_loss computations require [B, code_length, code_number]
-        # logits; vid_outputs.logits is None in the all-slot CE branch.
-        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('route_agree_loss', 0) != 0:
+        if loss_weights is not None and loss_weights.get('route_agree_loss', 0) != 0:
             route_agree_loss = OurTrainer.compute_route_agreement_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -314,7 +237,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('bucket_route_loss', 0) != 0:
+        if loss_weights is not None and loss_weights.get('bucket_route_loss', 0) != 0:
             bucket_route_loss = OurTrainer.compute_bucket_route_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -326,7 +249,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('video_rank_loss', 0) != 0:
+        if loss_weights is not None and loss_weights.get('video_rank_loss', 0) != 0:
             video_rank_loss = OurTrainer.compute_video_rank_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -338,7 +261,7 @@ class OurTrainer:
                 positive_mask=shared_positive_mask,
             )
 
-        if loss_weights is not None and (not multiview_all_slot_ce) and loss_weights.get('expanded_size_loss', 0) != 0:
+        if loss_weights is not None and loss_weights.get('expanded_size_loss', 0) != 0:
             expanded_size_loss = OurTrainer.compute_expanded_size_loss(
                 query_outputs.logits,
                 vid_outputs.logits,
@@ -357,7 +280,6 @@ class OurTrainer:
             bucket_route_loss=bucket_route_loss,
             video_rank_loss=video_rank_loss,
             expanded_size_loss=expanded_size_loss,
-            slot_ortho_loss=slot_ortho_loss,
         )
 
     @staticmethod
@@ -558,15 +480,6 @@ def build_loss_weights(config, phase):
         'route_bucket_gamma': config.get('route_bucket_gamma', 1.0),
         'video_rank_beta': config.get('video_rank_beta', 0.5),
         'route_bucket_default_size': config.get('route_bucket_default_size', 1.0),
-        # Multi-view fix pipeline flags (P3 + F2 mech a/b)
-        'multiview_all_slot_ce': config.get('multiview_all_slot_ce', False),
-        'view_div_high_weight': config.get('view_div_high_weight', 0.0),
-        'view_div_low_weight': config.get('view_div_low_weight', 0.0),
-        'slot_orthogonality_weight': config.get('slot_orthogonality_weight', 0.0),
-        # Multiplier for the slot_ortho_loss return key. Lives outside the
-        # phase-prefix system because F2 wants ortho active in pre/main/fit
-        # alike; using a single source flag keeps the launcher single-knob.
-        'slot_ortho_loss': config.get('slot_orthogonality_weight', 0.0),
     }
 
 
@@ -612,7 +525,6 @@ def train(config, global_step=0):
         e_dim=t5_config.d_model,
         in_dim=config.get('in_dim', 512),
         device=accelerator.device,
-        per_slot_init=config.get('per_slot_init', False),
     )
     accelerator.print(f'VideoRQVAE created with e_dim={t5_config.d_model} (matching T5 hidden_size)')
 
@@ -826,7 +738,9 @@ def train(config, global_step=0):
         _, current_metric = eval_retrieval(model, dataset, val_dataset, test_dataset, tokenizer, eval_batch_size, accelerator, global_step,
                                            is_pretrain=is_pretrain, code_length=code_length, drift_monitor=drift_monitor,
                                            selection_num_candidates=config.get('num_candidates', 10),
-                                           setting=config.get('setting', 1))
+                                           setting=config.get('setting', 1),
+                                           use_access_reorder=config.get('inference_reorder_by_access_score', True),
+                                           access_bucket_gamma=config.get('access_score_bucket_gamma', 0.50))
         best_metric, last_checkpoint, is_new_best = safe_save(accelerator, model, save_path, best_metric, current_metric,
                                                               last_checkpoint=last_checkpoint)
         if is_new_best:

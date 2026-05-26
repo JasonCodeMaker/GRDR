@@ -35,6 +35,7 @@ ANN_BASELINE_NUM_CANDIDATES = {
     ('lsmdc',  1): 100, ('lsmdc',  2): 100,
 }
 SUPPORTED_INDEX_TYPES = ('hnsw', 'ivf')
+LSMDC_BAD_CLIP_ID = '1012_Unbreakable_00.05.16.065-00.05.21.941'
 
 
 def parse_args():
@@ -151,11 +152,15 @@ def load_test_queries(dataset):
                 for item in data]
     elif dataset == 'lsmdc':
         pairs = []
-        with open('reranker/xpool/data/LSMDC/LSMDC16_annos_test.csv') as f:
+        # Keep LSMDC aligned with reranker/xpool/datasets/lsmdc_dataset.py:
+        # public 1K challenge split, minus the known unreadable clip.
+        with open('reranker/xpool/data/LSMDC/LSMDC16_challenge_1000_publictect.csv') as f:
             for line in f:
                 parts = line.strip().split('\t')
                 if len(parts) >= 6:
-                    pairs.append((parts[0], parts[5]))
+                    clip_id = parts[0]
+                    if clip_id != LSMDC_BAD_CLIP_ID:
+                        pairs.append((clip_id, parts[5]))
         return pairs
 
 
@@ -189,7 +194,7 @@ def load_train_video_ids(dataset):
                 parts = line.strip().split('\t')
                 if len(parts) >= 6:
                     cid = parts[0]
-                    if cid != '1012_Unbreakable_00.05.16.065-00.05.21.941':
+                    if cid != LSMDC_BAD_CLIP_ID:
                         clip_ids.append(cid)
         return clip_ids
 

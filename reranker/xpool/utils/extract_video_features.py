@@ -23,7 +23,8 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
-from datasets.media_utils import resolve_media_path
+from datasets.panda_dataset import PandaDataset
+from datasets.media_utils import resolve_media_path, strip_media_extension
 from utils.checkpoint import load_state_dict_compat
 
 
@@ -70,6 +71,13 @@ def get_unique_video_ids(config, split_type='test'):
         dataset = DiDeMoDataset(config, split_type, test_img_tfms)
         # DiDeMo uses all_pairs list, extract unique video IDs and remove .mp4 suffix
         return list(dict.fromkeys([pair[0].replace('.mp4', '') for pair in dataset.all_pairs]))
+
+    elif config.dataset_name == 'PANDA':
+        # PandaDataset stores raw {video, caption} rows in self.entries; video field
+        # is e.g. 'train/00000000_-xxx_clip00.mp4'. Strip extension to match the on-disk
+        # frame-dir name and the cache-key convention used elsewhere.
+        dataset = PandaDataset(config, split_type, test_img_tfms)
+        return list(dict.fromkeys(strip_media_extension(row['video']) for row in dataset.entries))
     else:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported")
 
@@ -165,6 +173,9 @@ class VideoFeatureExtractor:
         # Convert to numpy
         frame_embeds = video_features.cpu().numpy()
 
+        # Ensure subdir exists (PANDA video_id carries a "train/"/"test/" prefix).
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+
         # Save to cache based on pooling type
         if self.config.pooling_type == "avg":
             # Average pool frame features to get video-level embedding
@@ -238,6 +249,10 @@ def main():
                         help='Maximum number of videos to process (for testing)')
     parser.add_argument('--split', type=str, default='train', choices=['train', 'test'],
                         help='Dataset split to extract features from (train or test)')
+    parser.add_argument('--shard_id', type=int, default=0,
+                        help='Index of this shard in [0, shard_total). Deterministic hash partition by video_id.')
+    parser.add_argument('--shard_total', type=int, default=1,
+                        help='Total number of shards. Set >1 to split work across hosts/GPUs.')
 
     args, unknown = parser.parse_known_args()
 
@@ -281,6 +296,14 @@ def main():
     print(f"\nLoading {args.split} dataset...")
     unique_video_ids = get_unique_video_ids(config, args.split)
     print(f"Found {len(unique_video_ids)} unique videos")
+
+    if args.shard_total > 1:
+        import hashlib
+        def _shard(vid):
+            return int(hashlib.sha1(vid.encode('utf-8')).hexdigest(), 16) % args.shard_total
+        before = len(unique_video_ids)
+        unique_video_ids = [v for v in unique_video_ids if _shard(v) == args.shard_id]
+        print(f"Sharding: shard {args.shard_id}/{args.shard_total} -> {len(unique_video_ids)}/{before} videos")
 
     if args.max_videos is not None:
         unique_video_ids = unique_video_ids[:args.max_videos]

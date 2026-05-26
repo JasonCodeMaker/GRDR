@@ -480,8 +480,9 @@ def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_pat
 
 @torch.no_grad()
 def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step=0,
-                   is_pretrain=False, code_length=4, drift_monitor=None, selection_num_candidates=10, setting=1):
-    """Evaluate Dense Retrieval and candidate-expanded retrieval on the test set."""
+                   is_pretrain=False, code_length=4, drift_monitor=None, selection_num_candidates=10, setting=1,
+                   use_access_reorder=True, access_bucket_gamma=0.50):
+    """Evaluate Dense Retrieval and candidate-expanded retrieval on the test set. BARS-on by default."""
     # Import Tree here to avoid circular import
     from utils.model_utils import Tree
 
@@ -586,54 +587,80 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
         tk0 = tqdm(test_data_loader, total=len(test_data_loader), desc='CanHit Retrieval')
         output_all = []
+        scores_all = []
         # Keep checkpoint selection aligned with export beam. In Setting 2,
         # train-test sID collisions can expand a small beam into a large video
         # candidate pool, so forcing at least 50 generated sIDs changes the
         # operating point being optimized.
         test_top_k = selection_num_candidates
+        if use_access_reorder:
+            accelerator.print(
+                f'In-training eval BARS reorder enabled: bucket_gamma={access_bucket_gamma}'
+            )
         with torch.no_grad():
             for batch in tk0:
                 batch = {k: v.to(accelerator.device) for k, v in batch.items()
                          if isinstance(v, torch.Tensor)}
-                output = unwrap_model.generate(
+                gen_output = unwrap_model.generate(
                     input_ids=batch['caption_tokens'],
                     attention_mask=batch['attention_mask'],
                     max_length=code_length + 1,
                     num_beams=test_top_k,
                     num_return_sequences=test_top_k,
-                    prefix_allowed_tokens_fn=tree
+                    prefix_allowed_tokens_fn=tree,
+                    return_dict_in_generate=True,
+                    output_scores=True,
                 )
+                output = gen_output.sequences
+                if getattr(gen_output, "sequences_scores", None) is None:
+                    batch_scores = [0.0] * len(output)
+                else:
+                    batch_scores = gen_output.sequences_scores.cpu().tolist()
                 beam = []
+                beam_scores = []
                 new_output = []
-                for line in output:
+                new_scores = []
+                for idx, line in enumerate(output):
                     if len(beam) >= test_top_k:
                         new_output.append(beam)
+                        new_scores.append(beam_scores)
                         beam = []
+                        beam_scores = []
                     beam.append(line.cpu().tolist())
+                    beam_scores.append(batch_scores[idx])
                 new_output.append(beam)
+                new_scores.append(beam_scores)
                 output_all.extend(new_output)
+                scores_all.extend(new_scores)
 
         predictions = []
-        for generated_codes in output_all:
-            seen_sids = set()
-            sid_list = []
-
-            for code in generated_codes:
-                code_str = str(code)
-                if code_str not in seen_sids:
-                    seen_sids.add(code_str)
-                    sid_list.append(code_str)
-
+        canhit_results_records = []
+        for generated_codes, beam_scores in zip(output_all, scores_all):
+            sid_list, ranked_videos, _ranked_videos_with_sid, _ranked_scores = rank_expanded_candidates(
+                generated_codes,
+                beam_scores,
+                sid_to_videos,
+                use_access_score=use_access_reorder,
+                bucket_gamma=access_bucket_gamma,
+            )
             predictions.append(sid_list)
+            canhit_results_records.append({'candidates': ranked_videos})
 
         gt_video_ids = [sample['video_id'] for sample in test_dataset.samples]
-        canhit_results = compute_candidate_hit_metrics(predictions, gt_video_ids, sid_to_videos, ks=(20, 50, 100))
+        canhit_results = compute_result_candidate_hit_metrics(
+            canhit_results_records, gt_video_ids, ks=(20, 50, 100)
+        )
         selection_metric = canhit_results["CanHit@100"]
         accelerator.print('Candidate-expanded retrieval:', canhit_results)
-        accelerator.print(f'Selection metric CanHit@100: {selection_metric:.4f}')
+        accelerator.print(f'Selection metric CanHit@100: {selection_metric:.4f} '
+                          f'(BARS={"on" if use_access_reorder else "off"})')
 
         if accelerator.is_main_process:
             wandb.log({f"test/{k}": v for k, v in canhit_results.items()}, step=global_step)
+            wandb.log({
+                "eval/access_reorder_enabled": int(bool(use_access_reorder)),
+                "eval/access_bucket_gamma": float(access_bucket_gamma),
+            }, step=global_step)
 
         results.update(canhit_results)
 
@@ -746,8 +773,8 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
         "code_book_size": code_num,
         "code_book_num": num_latent_tokens,
         "timestamp": timestamp,
-        "access_reorder_enabled": bool(config.get('inference_reorder_by_access_score', False)),
-        "access_bucket_gamma": config.get('access_score_bucket_gamma', 0.0),
+        "access_reorder_enabled": bool(config.get('inference_reorder_by_access_score', True)),
+        "access_bucket_gamma": config.get('access_score_bucket_gamma', 0.50),
         "candidate_handoff_cap": config.get('candidate_handoff_cap', 0),
     }
     output_metrics = dict(metrics)
@@ -833,8 +860,8 @@ def test(config):
     cache_dir = config.get('cache_dir', './cache')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
     detailed_generation = config.get('detailed_generation', False)
-    use_access_reorder = config.get('inference_reorder_by_access_score', False)
-    access_bucket_gamma = config.get('access_score_bucket_gamma', 0.0)
+    use_access_reorder = config.get('inference_reorder_by_access_score', True)
+    access_bucket_gamma = config.get('access_score_bucket_gamma', 0.50)
     handoff_cap = int(config.get('candidate_handoff_cap', 0) or 0)
     setting = config.get('setting', 1)
     needs_train_pool = setting == 2
@@ -1547,7 +1574,7 @@ def do_epoch_encode(model: GRDR, train_dataset: VideoTextDataset,
                     video_codes: dict, tokenizer, batch_size, save_path, epoch, n_code,
                     code_length=1,
                     dataset_name='msrvtt', features_root='./data_process/datasets/features',
-                    codebook_seed_all_slots=False):
+                    codebook_seed_all_slots=True):
     """Encode video-text samples for an epoch and run k-means."""
     from utils.data_utils import write_pkl
 
@@ -1772,7 +1799,7 @@ def test_dr(config, checkpoint):
         code_length=code_length,
         dataset_name=dataset_name,
         features_root=features_root,
-        codebook_seed_all_slots=config.get('codebook_seed_all_slots', False),
+        codebook_seed_all_slots=config.get('codebook_seed_all_slots', True),
     )
 
 
