@@ -99,20 +99,26 @@ def compute_train_test_collision(train_code_path: str, test_codes_dict: dict) ->
     }
 
 
-def build_per_video_loader(train_dataset, batch_size, tokenizer):
-    """K1 helper: one DataLoader sample per unique video_id (first occurrence)."""
+def first_per_base_video_indices(samples):
+    """Return first sample index for each base video, preserving dataset order."""
     seen = set()
     per_video_indices = []
-    for i, s in enumerate(train_dataset.samples):
+    for i, s in enumerate(samples):
         base = s['video_id'].rsplit('_', 1)[0] if '_' in s['video_id'] else s['video_id']
         if base not in seen:
             seen.add(base)
             per_video_indices.append(i)
-    sampler = torch.utils.data.SubsetRandomSampler(per_video_indices)
+    return per_video_indices
+
+
+def build_per_video_loader(train_dataset, batch_size, tokenizer):
+    """K1 helper: one DataLoader sample per unique video_id (first occurrence)."""
+    per_video_indices = first_per_base_video_indices(train_dataset.samples)
+    per_video_dataset = torch.utils.data.Subset(train_dataset, per_video_indices)
     collate_wrapper = lambda b: collate_fn(b, tokenizer, max_length=128)
     return torch.utils.data.DataLoader(
-        train_dataset,
-        sampler=sampler,
+        per_video_dataset,
+        shuffle=False,
         batch_size=batch_size,
         collate_fn=collate_wrapper,
         num_workers=8,
@@ -957,11 +963,11 @@ def test(config):
             cache_dir=cache_dir,
             ids=video_codes
         )
-        train_data_loader = torch.utils.data.DataLoader(
-            train_dataset, collate_fn=collate_wrapper, batch_size=batch_size,
-            shuffle=False, num_workers=16
+        train_data_loader = build_per_video_loader(train_dataset, batch_size, tokenizer)
+        print(
+            f"Train dataset: {len(train_dataset)} samples; "
+            f"corpus sID loader: {len(train_data_loader.dataset)} first-occurrence videos"
         )
-        print(f"Train dataset: {len(train_dataset)} samples")
 
     model = model.cuda()
     if hasattr(model, "device"):
