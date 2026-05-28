@@ -487,7 +487,7 @@ def save_code(model, train_dataset, video_codes, tokenizer, batch_size, save_pat
 @torch.no_grad()
 def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step=0,
                    is_pretrain=False, code_length=4, drift_monitor=None, selection_num_candidates=10, setting=1,
-                   use_access_reorder=True, access_bucket_gamma=0.50):
+                   use_access_reorder=True, access_bucket_gamma=0.50, handoff_cap=0):
     """Evaluate Dense Retrieval and candidate-expanded retrieval on the test set. BARS-on by default."""
     # Import Tree here to avoid circular import
     from utils.model_utils import Tree
@@ -599,6 +599,14 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
         # candidate pool, so forcing at least 50 generated sIDs changes the
         # operating point being optimized.
         test_top_k = selection_num_candidates
+        # Budget cap for the selection metric: explicit handoff_cap, else auto 3x beam
+        # (project budget rule avg <= 3x beam_size). Capping makes FullSetHit non-gameable
+        # by sID collapse: collapsed giant buckets get BARS-penalised and truncated.
+        effective_cap = handoff_cap if handoff_cap and handoff_cap > 0 else 3 * test_top_k
+        accelerator.print(
+            f'In-training selection cap: {effective_cap} videos/query '
+            f'({"explicit handoff_cap" if handoff_cap and handoff_cap > 0 else "auto 3x beam"})'
+        )
         if use_access_reorder:
             accelerator.print(
                 f'In-training eval BARS reorder enabled: bucket_gamma={access_bucket_gamma}'
@@ -641,6 +649,7 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
 
         predictions = []
         canhit_results_records = []
+        capped_ranked_videos = []
         for generated_codes, beam_scores in zip(output_all, scores_all):
             sid_list, ranked_videos, _ranked_videos_with_sid, _ranked_scores = rank_expanded_candidates(
                 generated_codes,
@@ -651,19 +660,38 @@ def eval_retrieval(model, train_dataset, val_dataset, test_dataset, tokenizer, b
             )
             predictions.append(sid_list)
             canhit_results_records.append({'candidates': ranked_videos})
+            capped_ranked_videos.append(ranked_videos[:effective_cap])
 
         gt_video_ids = [sample['video_id'] for sample in test_dataset.samples]
+        # CanHit@{20,50,100} stay on the uncapped pool (unchanged from prior behavior).
         canhit_results = compute_result_candidate_hit_metrics(
             canhit_results_records, gt_video_ids, ks=(20, 50, 100)
         )
-        selection_metric = canhit_results["CanHit@100"]
+        # Selection + budget metrics read on the cap-truncated pool: FullSetHit on the
+        # capped pool == CanHit@cap (a fixed-K recall), which sID collapse cannot game.
+        total = len(gt_video_ids)
+        post_cap_ranks = [_rank_video_id(rv, gt) for rv, gt in zip(capped_ranked_videos, gt_video_ids)]
+        full_hits = sum(1 for r in post_cap_ranks if r is not None)
+        fullset_at_cap = full_hits / total * 100 if total else 0.0
+        mld = _mean_log_discount(post_cap_ranks)
+        avg_cands = sum(len(rv) for rv in capped_ranked_videos) / total if total else 0.0
+        # Lexicographic save-best: integer FullSetHit count (gaps >= 1) is strictly primary;
+        # MeanLogDiscount in [0,1) only breaks exact ties (common at Setting 1).
+        selection_metric = full_hits + mld
         accelerator.print('Candidate-expanded retrieval:', canhit_results)
-        accelerator.print(f'Selection metric CanHit@100: {selection_metric:.4f} '
-                          f'(BARS={"on" if use_access_reorder else "off"})')
+        accelerator.print(
+            f'Selection metric FullSetHit@cap={fullset_at_cap:.4f} '
+            f'(+MLD {mld:.4f} tiebreak; cap={effective_cap}, avg_cands={avg_cands:.2f}, '
+            f'BARS={"on" if use_access_reorder else "off"})'
+        )
 
         if accelerator.is_main_process:
             wandb.log({f"test/{k}": v for k, v in canhit_results.items()}, step=global_step)
             wandb.log({
+                "test/FullSetHitAtCap": fullset_at_cap,
+                "test/MeanLogDiscount": mld,
+                "test/avg_candidates_per_query": avg_cands,
+                "eval/effective_cap": int(effective_cap),
                 "eval/access_reorder_enabled": int(bool(use_access_reorder)),
                 "eval/access_bucket_gamma": float(access_bucket_gamma),
             }, step=global_step)

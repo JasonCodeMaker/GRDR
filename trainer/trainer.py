@@ -740,7 +740,8 @@ def train(config, global_step=0):
                                            selection_num_candidates=config.get('num_candidates', 10),
                                            setting=config.get('setting', 1),
                                            use_access_reorder=config.get('inference_reorder_by_access_score', True),
-                                           access_bucket_gamma=config.get('access_score_bucket_gamma', 0.50))
+                                           access_bucket_gamma=config.get('access_score_bucket_gamma', 0.50),
+                                           handoff_cap=config.get('candidate_handoff_cap', 0))
         best_metric, last_checkpoint, is_new_best = safe_save(accelerator, model, save_path, best_metric, current_metric,
                                                               last_checkpoint=last_checkpoint)
         if is_new_best:
