@@ -14,7 +14,6 @@ LATENCY_HELPERS_DIR=${LATENCY_HELPERS_DIR:-${FUNC_DIR}/utils}
 # indist (default): per-dataset C=128/L=3, in-distribution — the canonical 'figures/' tree.
 # zeroshot: Panda ckpts, zero-shot (legacy figure) — the 'figures_panda/' tree.
 EVAL_MODE=${EVAL_MODE:-indist}
-_indist_suffix=""; [ "${EVAL_MODE}" = "indist" ] && _indist_suffix="_indist"  # candidate subtree split (candidates_indist/)
 
 # Runtime output root. The in-distribution figure is the canonical 'figures/' tree;
 # the legacy Panda zero-shot tree was renamed to 'figures_panda/'.
@@ -27,10 +26,10 @@ SENTINEL_DIR=${SENTINEL_DIR:-${RUNTIME_ROOT}/manifests}
 EVAL_INPUTS_ROOT=${EVAL_INPUTS_ROOT:-${REPO_ROOT}/output/evaluation_results/figures_panda}
 MANIFEST_DIR=${MANIFEST_DIR:-${EVAL_INPUTS_ROOT}/manifests/latency}
 
-# Candidate-set roots: GRDR (volatile) vs baselines (stable). Req 3. indist -> separate subtree
-# so in-distribution candidates do not clobber the zero-shot ones for the same (ds, op).
-CAND_GRDR_ROOT=${CAND_GRDR_ROOT:-${REPO_ROOT}/candidates${_indist_suffix}/GRDR}
-CAND_BASE_ROOT=${CAND_BASE_ROOT:-${REPO_ROOT}/candidates${_indist_suffix}/baselines}
+# Candidate-set roots: GRDR (volatile) vs baselines (stable). Req 3. Both eval modes
+# write under candidates/ (indist and zeroshot share the same (ds, op) filenames).
+CAND_GRDR_ROOT=${CAND_GRDR_ROOT:-${REPO_ROOT}/candidates/GRDR}
+CAND_BASE_ROOT=${CAND_BASE_ROOT:-${REPO_ROOT}/candidates/baselines}
 
 # Per-stage result roots (the 2x2 naming; replaces pass_a/pass_b).
 RECALL_STAGE_ROOT=${RECALL_STAGE_ROOT:-${RUNTIME_ROOT}/recall-stage}

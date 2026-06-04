@@ -23,8 +23,7 @@ Two eval modes select per-dataset checkpoints **and** which output tree is writt
 
 Dataset-level inputs (the 200-query latency-subset manifests and EERCF query TSVs) are
 shared across modes and live in `figures_panda/` (`EVAL_INPUTS_ROOT`); they describe the
-test slice, not the model. Candidate sets split by mode into `candidates_indist/` vs
-`candidates/`.
+test slice, not the model. Candidate sets for both modes are written under `candidates/`.
 
 Every script reads its paths from [`_env.sh`](_env.sh) (the single source of truth).
 You normally only set a few env vars on the command line; the defaults handle the rest.
@@ -214,7 +213,7 @@ output/evaluation_results/figures/      (RUNTIME_ROOT, EVAL_MODE=indist)
 output/evaluation_results/figures_panda/   (RUNTIME_ROOT, EVAL_MODE=zeroshot;
                                             also holds the shared query_sets/ + latency manifests)
 
-candidates_indist/   (EVAL_MODE=indist) | candidates/   (EVAL_MODE=zeroshot)
+candidates/   (both EVAL_MODEs write here)
   GRDR/<ds>/...                     grdr_ref candidate sets (volatile)
   baselines/<method>/<ds>/...       baseline candidate sets (stable)
 ```
