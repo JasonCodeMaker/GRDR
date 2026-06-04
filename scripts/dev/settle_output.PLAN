@@ -1,0 +1,88 @@
+SETTLE OUTPUT — redesign to checkpoints/ + evaluation_results/.
+
+The default run (COMPAT=symlink) needs NO code edits: backward-compat symlinks at every
+old path keep all references resolving. The edits below are ONLY needed if you run with
+COMPAT=none to get a fully symlink-free tree.
+
+NEW PATHS:
+  output/GRDR/<ds>/...            -> output/checkpoints/GRDR/<ds>/...
+  output/GRDR/bucket_candidate_k20/msrvtt/<run>
+                                  -> output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/<run>
+  output/GRDR/panda/...           -> output/checkpoints/GRDR/panda/...
+  output/GRDR_P6/panda/...        -> output/checkpoints/GRDR/panda/p6/...
+  output/GRDR/multiview_waas/...  -> output/checkpoints/GRDR/panda/multiview_waas/...
+  # Baseline is model -> dataset; method names unified to avg(=text_guided), tiger(=standard), videorqvae, eercf, t2vindexer
+  output/baseline/<ds>/text_guided -> output/checkpoints/Baseline/avg/<ds>
+  output/baseline/<ds>/standard    -> output/checkpoints/Baseline/tiger/<ds>
+  output/baseline/<ds>/videorqvae  -> output/checkpoints/Baseline/videorqvae/<ds>
+  output/baseline/panda-pretrain/avg        -> output/checkpoints/Baseline/avg/panda
+  output/baseline/panda-pretrain/tiger      -> output/checkpoints/Baseline/tiger/panda
+  output/baseline/panda-pretrain/eercf      -> output/checkpoints/Baseline/eercf/panda
+  output/baseline/panda-pretrain/t2vindexer -> output/checkpoints/Baseline/t2vindexer/panda
+  output/semantic-tvr-progressive -> output/checkpoints/_legacy/semantic-tvr-progressive
+  output/reranker/...             -> output/evaluation_results/rerank/...
+  output/ann_baseline/...         -> output/evaluation_results/ann_baseline/...
+  output/ann_latency/...          -> output/evaluation_results/latency/ann_latency/...
+  output/ann_stage2_compare/...   -> output/evaluation_results/latency/ann_stage2_compare/...
+  output/latency_recall_figure/.. -> output/evaluation_results/figures/...
+  output/xpool_t2v_eval/...       -> output/evaluation_results/rerank/xpool_t2v_eval/...
+
+Do NOT touch AGENTS.md:99 — that path is under var/research/.../output/GRDR/..., not this output/ tree.
+
+EDITS (COMPAT=none only):
+
+# GRDR -> checkpoints/GRDR  (note the msrvtt<->bucket_candidate_k20 order swap)
+run.py:117    default eval_checkpoint -> output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt
+run.py:158    default --save_path     -> output/checkpoints/GRDR/msrvtt/bucket_candidate_k20   (now dataset-first; new non-msrvtt runs: set SAVE_PATH explicitly)
+scripts/train.sh:19   SAVE_PATH       -> output/checkpoints/GRDR/msrvtt/bucket_candidate_k20
+README.md:73          -> output/checkpoints/GRDR/msrvtt/best_model/best_model.pt
+AGENTS.md:92          Current Best ckpt (doc) -> output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-.../model-3-fit/best_model.pt
+scripts/eval_t1.sh:8,48,89,129    -> output/checkpoints/GRDR/<ds>/best_model/best_model.pt
+scripts/eval_t2.sh:8,49,91,132    -> output/checkpoints/GRDR/<ds>/best_model/best_model.pt
+scripts/latency_recall_figure/_env.sh:48          GRDR_REF_CKPT -> .../output/checkpoints/GRDR/panda/latency_recall_best/model-3-fit/best_model.pt
+scripts/latency_recall_figure/refresh_grdr.sh:4   comment
+scripts/latency_recall_figure/README.md:192       doc
+
+# baseline -> checkpoints/Baseline (model -> dataset; root is Baseline, each panda method gets a panda/ level)
+scripts/latency_recall_figure/_env.sh:56          BASE_CKPT_ROOT      -> .../output/checkpoints/Baseline
+scripts/latency_recall_figure/_env.sh:58          EERCF_INIT_MODEL    -> ${BASE_CKPT_ROOT}/eercf/panda/pytorch_model.bin.best.0
+scripts/latency_recall_figure/_env.sh:59          EERCF_CACHE_ROOT    -> ${BASE_CKPT_ROOT}/eercf/panda/cached_video_features_p3d
+scripts/latency_recall_figure/_env.sh:60          T2V_CKPT            -> ${BASE_CKPT_ROOT}/t2vindexer/panda/best_model.pt
+scripts/latency_recall_figure/baselines/stage2_latency.sh:35      EERCF_CKPT -> .../output/checkpoints/Baseline/eercf/panda/pytorch_model.bin.best.0
+scripts/latency_recall_figure/baselines/avg_tiger_stage1_export.sh:58   CKPT_ROOT -> .../output/checkpoints/Baseline ; search root now ${CKPT_ROOT}/${baseline}/${ds,,}
+scripts/latency_recall_figure/baselines/recall_latency_cell.sh:70       resolve search root now ${TIGER_AVG_CKPT_ROOT}/${baseline}/${ds,,}  (dataset-scoped)
+scripts/latency_recall_figure/baselines/eercf/import_eercf_matrix.py:44,50,52  DEFAULT_INPUT_ROOT -> Baseline ; eercf paths gain /panda/
+scripts/latency_recall_figure/README.md:193       doc
+
+# ann_baseline -> evaluation_results/ann_baseline
+baselines/ann_dense_retrieval/eval_ann.py:53          default --output_dir -> output/evaluation_results/ann_baseline
+scripts/baselines/run_all_ann_baselines.sh:9
+scripts/baselines/eval_ann.sh:13
+scripts/latency_recall_figure/baselines/ann_stage1_export.sh:17
+
+# ann_latency -> evaluation_results/latency/ann_latency
+scripts/baselines/run_ann_latency_suite.sh:16
+
+# latency_recall_figure -> evaluation_results/figures
+scripts/latency_recall_figure/_env.sh:14                          RUNTIME_ROOT -> .../output/evaluation_results/figures
+scripts/latency_recall_figure/baselines/stage2_latency.sh:14,15
+scripts/latency_recall_figure/baselines/avg_tiger_stage1_export.sh:11
+scripts/latency_recall_figure/baselines/ann_stage1_export.sh:14
+scripts/latency_recall_figure/baselines/ann_rerank.sh:23
+scripts/latency_recall_figure/lib/build_latency_subset.py:11          help text
+scripts/latency_recall_figure/baselines/eercf/stage1_eercf.sh:46      ABSOLUTE
+scripts/latency_recall_figure/baselines/eercf/import_eercf_matrix.py:41,47  ABSOLUTE
+scripts/latency_recall_figure/README.md:7,41,122,178                  doc
+
+# reranker -> evaluation_results/rerank
+reranker/xpool/test.py:108                            output_dir -> output/evaluation_results/rerank
+reranker/xpool/test_perquery.py:187                   --report_dir default
+reranker/xpool/config/all_config.py:81                help text
+reranker/xpool/utils/inference_sim.py:590             --output default
+baselines/ann_dense_retrieval/latency_report.py:68    default
+scripts/baselines/run_all_ann_baselines.sh:25         --stage2_dir
+scripts/latency_recall_figure/track2_rerank_local.sh:100,101
+scripts/latency_recall_figure/baselines/ann_rerank.sh:29,111,112,113
+
+NOTE: reranker/xpool/*.py and baselines/*.py only change WHERE result CSVs are written
+(no training/eval numerics) — not in scope for the Change-Isolation worktree rule.

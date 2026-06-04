@@ -10,6 +10,7 @@ __pycache__/
 .worktrees/
 /test/
 /tests/
+docs
 
 # Data, caches, and external assets
 /dataset/*
@@ -20,6 +21,7 @@ __pycache__/
 /reranker/xpool/video_features_cache
 /reranker/xpool/ckpt/*
 !/reranker/xpool/ckpt/.gitkeep
+candidates/_backup
 
 # Runtime outputs
 /figures/
@@ -32,6 +34,8 @@ __pycache__/
 
 # Generated candidates
 /candidates/baseline/
+/candidates/baselines/
+/candidates/GRDR/*/
 /candidates/*_ann_*_candidates_t*.json
 
 scripts/panda

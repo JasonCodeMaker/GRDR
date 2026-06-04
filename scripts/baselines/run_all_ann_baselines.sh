@@ -6,7 +6,7 @@ source scripts/_common.sh
 
 INDEX_TYPES_STR="${INDEX_TYPES:-hnsw ivf}"
 read -r -a INDEX_TYPES_ARR <<<"$INDEX_TYPES_STR"
-OUTPUT_ROOT="${OUTPUT_ROOT:-output/ann_baseline}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-output/evaluation_results/ann_baseline}"
 SUMMARY_CSV="${SUMMARY_CSV:-$OUTPUT_ROOT/ann_stage1_stage2_summary.csv}"
 COMPACT_CSV="${COMPACT_CSV:-$OUTPUT_ROOT/ann_stage1_stage2_compact.csv}"
 
@@ -22,7 +22,7 @@ activate_conda_env "$ANN_BASELINE_ENV"
 run_cmd python scripts/baselines/summarize_ann_results.py \
   --stage1_root "$OUTPUT_ROOT" \
   --candidate_dir candidates \
-  --stage2_dir output/reranker \
+  --stage2_dir output/evaluation_results/rerank \
   --output "$SUMMARY_CSV" \
   --compact-output "$COMPACT_CSV"
 deactivate_conda_env

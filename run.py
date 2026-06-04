@@ -114,7 +114,7 @@ def parse_args():
     # Evaluation arguments
     parser.add_argument('--eval', action='store_true', default=False, help='Evaluate the model')
     parser.add_argument('--eval_checkpoint', type=str,
-                        default="output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt",
+                        default="output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt",
                         help='Checkpoint path for evaluation')
     parser.add_argument('--num_candidates', type=int, default=20,
                        help='Number of constrained-generation beams/routes per query before sID expansion')
@@ -155,7 +155,7 @@ def parse_args():
     parser.add_argument('--output_json', type=str, default=None,
                        help='Pass-B explicit output path for the candidate JSON (overrides --candidate_output_dir)')
 
-    parser.add_argument('--save_path', type=str, default='output/GRDR/bucket_candidate_k20')
+    parser.add_argument('--save_path', type=str, default='output/checkpoints/GRDR/msrvtt/bucket_candidate_k20')
     parser.add_argument('--exp_name', type=str, default='fit_bucket_l010_g10_k20_s42', help='Experiment name for wandb and save path')
     parser.add_argument('--seed', type=int, default=42, help='Random seed for reproducibility')
     parser.add_argument('--device', type=int, default=0, choices=[0, 1],
@@ -237,7 +237,7 @@ def main():
             config['code_length'] = loop + 1
             config['prev_model'] = checkpoint
             config['prev_id'] = f'{checkpoint}.code' if checkpoint is not None else None
-            config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
+            # config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
             if loop == args.start_loop and args.skip_pretrain:

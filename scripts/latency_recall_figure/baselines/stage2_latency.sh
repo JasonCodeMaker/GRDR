@@ -35,6 +35,7 @@ EERCF_NATIVE_PY=${EERCF_NATIVE_PY:-${REPO_ROOT}/scripts/latency_recall_figure/ba
 EERCF_CKPT=${EERCF_CKPT:-${REPO_ROOT}/output/checkpoints/Baseline/eercf/panda/pytorch_model.bin.best.0}
 EERCF_FRAME_CACHE=${EERCF_FRAME_CACHE:-/data2/uqzzha35/VideoRetrieval/eercf_cache/cached_frame_features_p3d}
 EERCF_DIR=${EERCF_DIR:-/home/uqzzha35/Project/SemanticID/EERCF}
+LATENCY_HELPERS_DIR=${LATENCY_HELPERS_DIR:-${REPO_ROOT}/scripts/latency_recall_figure/utils}
 
 # Canonical Pass-A mapping (from P4_grdr_mv4.sh REREANK_VIDEOS_DIR). With a
 # full Xpool-Panda cache hit X-Pool never reads from videos_dir, but the path
@@ -110,7 +111,7 @@ run_cell () {
             --subset_manifest "${manifest}" \
             --warmup_n_used "${warmup_n}" \
             --wall_time_cap_s "${WALL_CAP_S}" \
-            --latency_helpers_dir "${REPO_ROOT}/scripts/latency_recall_figure/lib" \
+            --latency_helpers_dir "${LATENCY_HELPERS_DIR}" \
             --report_dir "${report_dir}" \
             --summary_csv "${report_dir}/perquery_summary.csv" \
             --summary_json "${report_dir}/perquery_summary.json" \

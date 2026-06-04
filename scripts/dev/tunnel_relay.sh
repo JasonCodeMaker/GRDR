@@ -13,6 +13,7 @@
 #   --no-verify   skip sha256 verification (faster; only for trusted reruns)
 # Env:
 #   RELAY_PANE    tmux session/pane (default: "bunya")
+#   RELAY_PORT_MAX_TRIES  number of ports to try when not pinned (default: 30)
 #
 # Mechanism:
 #   push: workstation runs python http.server on 127.0.0.1:PORT; ~C -R adds the
@@ -26,7 +27,9 @@ set -euo pipefail
 
 PANE="${RELAY_PANE:-bunya}"
 PORT_BASE=18443
+PORT_MAX_TRIES="${RELAY_PORT_MAX_TRIES:-30}"
 PORT=""
+PORT_PINNED=0
 VERIFY=1
 MODE=""
 SRC=""
@@ -44,7 +47,7 @@ usage() {
 MODE=$1; SRC=$2; DST=$3; shift 3
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --port)      PORT=$2; shift 2 ;;
+    --port)      PORT=$2; PORT_PINNED=1; shift 2 ;;
     --no-verify) VERIFY=0; shift ;;
     *) usage ;;
   esac
@@ -54,7 +57,7 @@ done
 tmux has-session -t "$PANE" 2>/dev/null || die "tmux session '$PANE' not found"
 
 free_port() {
-  local p=$PORT_BASE
+  local p=${1:-$PORT_BASE}
   while ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":$p$"; do p=$((p+1)); done
   echo "$p"
 }
@@ -87,10 +90,16 @@ ssh_escape() {
 }
 
 start_local_http() {
-  ( cd "$1" && nohup python3 -m http.server "$2" --bind 127.0.0.1 \
-      > "/tmp/relay-http-$2.log" 2>&1 & echo $! > "/tmp/relay-http-$2.pid" )
+  (
+    cd "$1"
+    nohup python3 -m http.server "$2" --bind 127.0.0.1 \
+      > "/tmp/relay-http-$2.log" 2>&1 &
+    echo $! > "/tmp/relay-http-$2.pid"
+  )
   sleep 1
   [[ -s /tmp/relay-http-$2.pid ]] || die "local http server failed to start"
+  kill -0 "$(cat /tmp/relay-http-$2.pid)" 2>/dev/null \
+    || die "local http server failed to stay running on port $2; see /tmp/relay-http-$2.log"
 }
 stop_local_http() {
   [[ -f /tmp/relay-http-$1.pid ]] || return 0
@@ -114,11 +123,24 @@ do_push() {
     echo "$sum" > "$PUSH_STAGE/.sha256"
     log "sha256=$sum"
   fi
-  start_local_http "$PUSH_STAGE" "$PORT"
-  curl -sfI "http://127.0.0.1:$PORT/$fn" >/dev/null || die "local http unreachable"
-  ssh_escape "-R $PORT:127.0.0.1:$PORT"
-  pane_buf | grep -q "Forwarding port\." || die "remote forward failed"
-  pane_exec "curl -sfI http://127.0.0.1:$PORT/$fn >/dev/null" || die "tunnel unreachable from bunya"
+  local attempt next_port tunnel_ready=0
+  next_port=$PORT
+  for ((attempt=1; attempt<=PORT_MAX_TRIES; attempt++)); do
+    PORT=$next_port
+    start_local_http "$PUSH_STAGE" "$PORT"
+    curl -sfI "http://127.0.0.1:$PORT/$fn" >/dev/null || die "local http unreachable on port $PORT"
+    ssh_escape "-R $PORT:127.0.0.1:$PORT"
+    if pane_exec "curl -sfI http://127.0.0.1:$PORT/$fn >/dev/null"; then
+      tunnel_ready=1
+      break
+    fi
+    ssh_escape "-KR $PORT" 2>/dev/null || true
+    stop_local_http "$PORT"
+    [[ $PORT_PINNED -eq 1 ]] && die "tunnel unreachable from bunya on pinned port $PORT"
+    log "port $PORT unreachable from bunya; trying next port..."
+    next_port=$(free_port $((PORT+1)))
+  done
+  [[ $tunnel_ready -eq 1 ]] || die "tunnel unreachable from bunya after $PORT_MAX_TRIES port attempts"
   dd=$(dirname "$DST"); dn=$(basename "$DST")
   log "transferring..."
   pane_exec "mkdir -p '$dd' && time curl -fsS --retry 3 --continue-at - -o '$dd/$dn.partial' http://127.0.0.1:$PORT/$fn" \
@@ -146,7 +168,7 @@ do_pull() {
   else
     pane_exec "mkdir -p '$stage' && ln -sf \"\$(readlink -f '$SRC')\" '$stage/$fn'"
   fi
-  pane_exec "cd '$stage' && nohup python3 -m http.server $PORT --bind 127.0.0.1 > /tmp/relay-http-$PORT.log 2>&1 & echo \$! > /tmp/relay-http-$PORT.pid; sleep 1; [ -s /tmp/relay-http-$PORT.pid ]" \
+  pane_exec "cd '$stage' && { nohup python3 -m http.server $PORT --bind 127.0.0.1 > /tmp/relay-http-$PORT.log 2>&1 & echo \$! > /tmp/relay-http-$PORT.pid; } && sleep 1 && pid=\$(cat /tmp/relay-http-$PORT.pid 2>/dev/null) && [ -n \"\$pid\" ] && kill -0 \"\$pid\" 2>/dev/null" \
     || die "bunya http server failed to start"
   trap "set +e; pane_exec \"kill \\\$(cat /tmp/relay-http-$PORT.pid 2>/dev/null) 2>/dev/null; rm -rf /tmp/relay-http-$PORT.pid /tmp/relay-http-$PORT.log '$stage'\"; ssh_escape '-KL $PORT' 2>/dev/null" EXIT
   ssh_escape "-L $PORT:127.0.0.1:$PORT"

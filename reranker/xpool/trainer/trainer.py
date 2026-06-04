@@ -234,6 +234,12 @@ class Trainer(BaseTrainer):
             ]
             return texts, video_ids
 
+        if self.config.dataset_name == 'PANDA':
+            from datasets.media_utils import strip_media_extension
+            texts = [row['caption'] for row in dataset.entries]
+            video_ids = [strip_media_extension(row['video']) for row in dataset.entries]
+            return texts, video_ids
+
         raise NotImplementedError(
             f"Cached evaluation metadata extraction is not implemented for {self.config.dataset_name}"
         )
@@ -404,8 +410,10 @@ class Trainer(BaseTrainer):
         return res
 
     
-    def _valid_epoch_step(self, epoch, step, num_steps, pool_batch_size=64,
+    def _valid_epoch_step(self, epoch, step, num_steps, pool_batch_size=None,
                           expanded_pool_loader=None):
+        if pool_batch_size is None:
+            pool_batch_size = getattr(self.config, 'pool_batch_size', 64)
         """
         Validate at a step when training an epoch at a certain step.
 
@@ -505,8 +513,19 @@ class Trainer(BaseTrainer):
 
                 train_vid_ids_raw = expanded_pool_loader.dataset.video_ids
                 if use_cached_train_pool:
+                    cache_root_resolved = resolve_dataset_cache_dir(cache_root, self.config.dataset_name)
+                    filtered_train_ids = [
+                        vid for vid in train_vid_ids_raw
+                        if os.path.exists(os.path.join(
+                            cache_root_resolved,
+                            f"{normalize_video_id_for_cache(vid, self.config.dataset_name)}.npz"))
+                    ]
+                    n_missing = len(train_vid_ids_raw) - len(filtered_train_ids)
+                    if n_missing:
+                        print(f"Skipping {n_missing} train video(s) with missing cache entries "
+                              f"({len(filtered_train_ids)}/{len(train_vid_ids_raw)} remain)")
                     train_vid_embeds, train_vid_ids, is_pooled = load_cached_video_features(
-                        train_vid_ids_raw,
+                        filtered_train_ids,
                         cache_root,
                         self.config.dataset_name,
                         is_clip4clip=is_clip4clip,
@@ -639,18 +658,25 @@ class Trainer(BaseTrainer):
 
                 del vid_embeds
 
-            # Compute ranks
-            sims_sort = torch.argsort(sims, dim=-1, descending=True)
-            sims_sort_2 = torch.argsort(sims_sort, dim=-1, descending=False)
-
-            if gt_indices is not None:
-                # Expanded pool: extract rank at GT position for each query
-                ranks = sims_sort_2[torch.arange(len(gt_indices)), gt_indices].numpy()
-            else:
-                # Original: ground truth for text_i is video_i (diagonal)
-                ranks = torch.diag(sims_sort_2).numpy()
-
+            # Compute ranks (memory-efficient: skip sims_sort_2 when per-query export not requested,
+            # since 5694 x 1.2M x int64 = ~53 GB peak — OOMs Nectar 117 GB host).
             per_query_path = getattr(self.config, "save_per_query_ranks", None)
+            if per_query_path:
+                sims_sort = torch.argsort(sims, dim=-1, descending=True)
+                sims_sort_2 = torch.argsort(sims_sort, dim=-1, descending=False)
+                if gt_indices is not None:
+                    ranks = sims_sort_2[torch.arange(len(gt_indices)), gt_indices].numpy()
+                else:
+                    ranks = torch.diag(sims_sort_2).numpy()
+            else:
+                if gt_indices is not None:
+                    gt_sims_vec = sims[torch.arange(len(gt_indices)), gt_indices]
+                else:
+                    gt_sims_vec = sims.diagonal()
+                ranks = np.zeros(sims.shape[0], dtype=np.int64)
+                for q in range(sims.shape[0]):
+                    ranks[q] = int((sims[q] > gt_sims_vec[q]).sum())
+
             if per_query_path:
                 per_query_results = []
                 candidate_counts = None

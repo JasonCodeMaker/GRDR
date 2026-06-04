@@ -89,7 +89,7 @@ Last updated: 2026-05-11
 
 ### MSR-VTT
 - Variant: `fit_bucket_l010_g10_k20_s42` (seed 42)
-- Ckpt: `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
+- Ckpt: `output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
 - Setting 1 (beam 100, avg 130.73): CanHit@20/50/100/all = 52.8 / 74.5 / 86.5 / 91.0; XPool R@1/5/10 = 45.7 / 69.8 / 78.9
 - Setting 2 (beam 15, avg 300.41): CanHit@20/50/100/all = 4.6 / 15.0 / 32.0 / 64.3; XPool R@1/5/10 = 17.4 / 32.2 / 40.6
 - Setting 2 compact budget gate: `avg_candidates_per_query <= 310`; rows above are not comparable compact champions.

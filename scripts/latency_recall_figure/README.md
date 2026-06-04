@@ -185,17 +185,26 @@ Method quirks worth knowing:
 
 ```
 scripts/latency_recall_figure/
-  _env.sh                 single source of truth for all paths/knobs
-  _cells.sh               the per-cell logic + loop runner (shared by the 4 stages)
-  make_figure.sh          phase dispatcher (entry point)
+  # -- entry points (run these) --
+  make_figure.sh          phase dispatcher — THE entry point
   refresh_grdr.sh         GRDR-only refresh (high-frequency loop)
+  # -- infra (sourced by everything; not run directly) --
+  _env.sh                 single source of truth for all paths/knobs
+  _cells.sh               per-cell logic + loop runner (shared by the 4 stages)
+  # -- stage drivers (make_figure.sh dispatches to these) --
   recall-stage.sh  rerank-stage.sh  recall-latency.sh  rerank-latency.sh
-  aggregate_figure_csv.py walk the 4 subtrees -> figure_data.csv/json
-  render_figures.py       figure_data.csv -> per-dataset Panel A/B PNGs
-  lint_figure_data.py     CSV column/value contract check
+  track2_rerank_local.sh  X-Pool rerank cell (grdr_ref / tiger / avg / t2vindexer)
+  # -- utils/  shared Python helpers (called as ${FUNC_DIR}/utils/*.py; --
+  # --         the dir is exported as LATENCY_HELPERS_DIR for the eercf cells) --
+  utils/
+    aggregate_figure_csv.py   walk the 4 subtrees -> figure_data.csv/json
+    render_figures.py         figure_data.csv -> per-dataset Panel A/B PNGs
+    lint_figure_data.py       CSV column/value contract check
+    build_latency_subset.py   build the 200-query latency-subset manifests
+    latency_helpers.py        shared per-query timing helpers (manifest loader + CUDA timer)
+  # -- per-method cell scripts --
   GRDR/                   grdr_ref cell scripts (volatile — edited often)
   baselines/              tiger/avg/ann/eercf cell scripts (stable — cached)
-  lib/                    shared latency helpers
 
 output/evaluation_results/figures/      (RUNTIME_ROOT, EVAL_MODE=indist)
   recall-stage/ rerank-stage/ recall-latency/ rerank-latency/   per-stage artifacts

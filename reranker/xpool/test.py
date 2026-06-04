@@ -105,7 +105,7 @@ def main():
     result = trainer.validate()
 
     # Save results to CSV
-    output_dir = "output/reranker"
+    output_dir = "output/evaluation_results/rerank"
     csv_path = os.path.join(output_dir, config.result_file)
     os.makedirs(os.path.dirname(csv_path), exist_ok=True)
 

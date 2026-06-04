@@ -52,6 +52,28 @@ Before proposing or extending any new research idea, run a self-review first.
 - Do not pre-estimate run duration. `plan.html` rows, launcher manifests, allocation rows, and live-check rows record `est_time=unknown` until the run has executed at least 30 minutes of stable throughput; after that, derive ETA from observed throughput and update on every 10-minute report.
 - When a request spans multiple cells (e.g., Setting 1 + Setting 2, P1.a + P1.b, multi-dataset zero-shot transfer, beam-width sweeps), run every cell in scope before reporting back. State the full cell list at session start, update `results.html` and the canonical CSV incrementally as each cell finalizes, and list any skipped cells with explicit reason at close.
 
+## Change Isolation Rule (check FIRST for any GRDR-related change)
+
+Any edit that can move GRDR training or evaluation numbers MUST happen in an isolated git worktree, not in the main checkout. This is a hard precondition — check it before opening an editor on a GRDR file, and before dispatching any agent to implement a GRDR change.
+
+- **In scope (worktree required):** any file under `models/`, `trainer/`, `data/` sampling/routing logic, `run.py` training schedule, loss/regularizer formulations, semantic-ID generation/export code, X-Pool reranker code that the published "Current Best" results depend on, hyperparameter defaults that ship as new behavior, and any dataset/config change that alters what the model sees during training or evaluation. Rule of thumb: if a training or evaluation run with the change could produce different numbers from a run without it, it is in scope.
+- **Out of scope (main checkout is fine):** `research_html/` (dashboard, package pages, docs), top-level markdown docs, launcher comments / log strings, memory files, README and similar tracked-but-non-runtime artifacts.
+- **Workflow:** create the worktree via the `superpowers:using-git-worktrees` skill (native worktree or `git worktree add .worktrees/<slug> -b <branch>`). Implement the change in the worktree. Verify effectiveness against the relevant Current-Best anchor (see `## Current Best` below) under the compact-budget gate and downstream X-Pool rerank as the ultimate witness — per `## Global Optimization Objective`. Only merge the worktree branch back after the verification passes; failed worktrees are torn down per `## Refinement Guardrails` ("remove all worktrees created for that direction").
+- **Refusal:** if the user asks for a quick in-place GRDR edit on the main checkout, stop and surface this rule before editing.
+
+## Code Alignment Rule (check FIRST for any experiment on Bunya or Nectar)
+
+Before launching any experiment on a remote compute environment (Bunya, Nectar), verify that the remote checkout's code state matches the local workstation's code state. Drift between sites silently invalidates results — an experiment that runs on Bunya from a stale SHA is wasted compute and a misleading data point that can take days to detect.
+
+- **In scope:** any wall-clock training run, evaluation run, semantic-ID generation pass, candidate export, captioning pipeline, or any other GPU/CPU job whose output is consumed as evidence. Includes both new launches and resumes/continuations of prior runs. Applies symmetrically to all sites — workstation, Bunya, Nectar — even if only two of the three are involved in a given experiment.
+- **Out of scope:** light orchestration on a remote login node (mkdir, ls, sha256, file-transfer staging) that does not execute project code.
+- **Verification protocol (run before each remote launch):**
+  1. `git rev-parse HEAD` on local AND on the remote checkout (Bunya: `/scratch/user/uqzzha35/Project/<project>`; Nectar: the project mirror used by the run). The two SHAs must match.
+  2. `git status --porcelain` on both sides. Both must be clean, OR the local working-tree diff must be explicitly synced to the remote (via the `bunya-file-transfer` skill for Bunya; the documented Nectar transfer path for Nectar) and re-verified by file hash.
+  3. If a `.worktrees/<branch>` checkout is the runtime root per the Change Isolation Rule above, apply the protocol to the worktree path, not to the main checkout. The worktree's SHA is the witness.
+- **On mismatch:** do NOT launch. Either fast-forward the lagging side (`git fetch && git checkout <sha>`), push the missing commits, or sync the working-tree diff. Re-verify after the sync. Only then launch.
+- **Record the verified SHA** in the run's tracker live-card / launcher manifest / launch sentinel so post-hoc analysis can confirm which code produced the numbers. Untracked SHA = the run is not citable as evidence.
+
 ## Refinement Guardrails
 
 For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, treat the current GRDR paper story as a compatibility constraint unless the user explicitly asks to replace it.
@@ -81,15 +103,59 @@ For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, tre
 - Runtime state, supervisor JSON, local logs, candidate JSONs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
 - Legacy `research/active/` and `research/archive/` directories are retained for pre-2026-05-11 packages only; do not add new content there.
 
+## Brainstorm → Package Promotion Recipe
+
+Three-phase lifecycle for a new idea: **explore → refine → promote**. Exploration is cheap and ungated; promotion is the gated commit that turns the idea into a trustworthy, runnable in-progress package. This is orchestration over the existing skills (`/research-package` scaffolds, `/research-op` mutates rows/fields) — not a new skill. Promotion is always user-triggered. Phases 2–3 adopt the convergence discipline of the superpowers `brainstorming` skill — divergent approaches, section-gated approval, and a spec self-review — applied at the `PILOT_READY` gate (not during early exploration, which stays frictionless). `idea-creator` diverges across *ideas* upstream; this recipe converges *one* idea into an approved design.
+
+### Container model (hybrid)
+
+While exploring and refining, a brainstorm lives as **two coupled artifacts**, not a full package:
+1. **Content** — a doc-style HTML at `research_html/brainstorm/<YYYY-MM-DD>-<slug>.html`, following the doc-template + style guide (Rule 0 applies). This holds the substance.
+2. **Dashboard handle** — one thin row in `research_html/data/research-packages.js` with `category: "brainstorm"`, `status: "EXPLORING"`, and `detailPath: "brainstorm/<slug>.html"` so the lane card opens the doc directly. No `packages/<id>/` directory exists yet. (`relativeDetailPath()` already reads a free-form `detailPath` per row, so no renderer change is needed.)
+
+The thin row carries only brainstorm-legal fields: required `direction` + `contributionSpineFlag` (an id from `RESEARCH_CONTRIBUTION_SPINE` in `schema.js`); metric/gate fields (`activeGate`, `primaryMetricVsGate`, `methodsTried`, `openRuns`) are schema-forbidden for this category. Keep `name`, `problem`, `objective`, `motivation`, `lastUpdated` populated so the card renders.
+
+### Phase 1 — explore
+
+- Discuss the brief idea with the user; write the doc.
+- Insert the thin lane row (status `EXPLORING`).
+- Run `python research_html/scripts/learnings_lint.py lint-status`; fix any missing required field.
+
+### Phase 2 — refine
+
+Refine converges the idea to an approved design. Iterate the doc freely, but the `EXPLORING → PILOT_READY` bump is gated on three checks (adapted from the superpowers `brainstorming` skill):
+
+- **Gate A — approaches considered (divergence).** The doc must carry a section with **≥2 candidate designs**, their trade-offs, and the chosen one *with reasoning* — not just a single `direction`. This forces converging on the best design rather than the first one imagined.
+- **Gate B — section-gated approval (convergence).** Present the design one section at a time — *modules changed → train/eval data flow → metric & budget gate → risks* — and get user approval after each before advancing. Drive elicitation with `AskUserQuestion` multiple-choice batches (one decision per question), not a prose dump.
+- **Gate C — spec self-review.** Run the research self-review under `## Research Workflow` (problem anchor, weak assumptions, reviewer attacks, novelty), *plus* the four superpowers checks: placeholder scan (no `TBD`/`TODO` left), internal consistency (sections don't contradict), scope check (one package or decompose), ambiguity check (metric/gate definitions admit one reading). Fix inline.
+
+Only when all three pass — and the idea has a falsifiable hypothesis and a no-change boundary — bump the row `EXPLORING → PILOT_READY` (adds required `hypothesis` + `noChangeBoundary`) via `/research-op`. `PILOT_READY → PROMOTED` is a **hard gate**: do not scaffold a package until the user has explicitly approved the design, not merely until the hypothesis/no-change fields exist.
+
+### Phase 3 — promote (user-triggered only)
+
+A single atomic procedure; do not stop partway:
+1. **Elicit** the in-progress trustworthiness fields the doc has not already settled, via `AskUserQuestion` multiple-choice batches (one decision per question — the CC-native form of the superpowers one-question-at-a-time rule), not a prose dump. Cover: hypothesis; primary metric + `metric-formula`/`metric-dataset`/`metric-protocol`/`metric-dedup`/`metric-cutoff`; baseline + `baseline-checkpoint`/`baseline-protocol`/`baseline-last-verified`; budget gate (Setting 2: `avg_candidates_per_query <= 310`); no-change boundary; seed plan; the `experiments[]` pipeline (`P\d+` rows that paint the timeline); `nextRoute`. Carry over `direction`→problem/objective, `hypothesis`, `noChangeBoundary`, `contributionSpineFlag`.
+2. **Scaffold** `packages/<YYYY-MM-DD>-<slug>/` via `/research-package` as `category: in-progress`, `status: CONTEXT_LOADED`, `--scope all`, filling the elicited fields.
+3. **Migrate the doc**: copy `research_html/brainstorm/<slug>.html` → `packages/<new-id>/docs/<slug>.html` (now the canonical, dashboard-wired copy). Freeze the original brainstorm file as a backup — add a banner at the top linking to the package doc and never edit it again. (If a frozen duplicate is unwanted, move instead and rely on git history.)
+4. **Tear down the handle**: delete the thin brainstorm row from `research-packages.js`. Do not keep it as `PROMOTED` — the in-progress package is now the single home; provenance lives in the migrated doc + git history.
+5. **GRDR ready-to-run gates** (these, not lint, define "runnable"): create the Change-Isolation worktree per `## Change Isolation Rule`; satisfy the `## Code Alignment Rule` SHA check before any remote launch; record the budget gate and name X-Pool downstream rerank as the ultimate witness. Advance toward `READY_TO_LAUNCH` only once these hold.
+6. **Lint**: run `python research_html/scripts/learnings_lint.py all` and fix every error before closing the turn.
+
 ## Research Doc Style
 
 Any new HTML doc under `research_html/packages/<pkg-id>/docs/` MUST start from the shared template and follow the style guide. This keeps every doc dashboard-wired (status-strip + package-nav) and visually consistent.
 
-- **Skeleton:** copy `research_html/templates/doc-template.html`. Replace the six template variables (`$package_id`, `$doc_title`, `$eyebrow`, `$lead`, `$last_updated`, `$root_prefix`), delete the demo `<section data-section="primitives">`, then write the doc's real sections.
-- **When to reach for each primitive:** see `research_html/templates/doc-style-guide.html`. It is the canonical reference for `pre.diagram`, `pre.code`, `.callout` (+`.warn`/`.ok`), `table.data-table`, `span.pill-mono`, `h2.stage-title`+`step-num`, `p.kv-mini`. Authors should re-read the style guide before creating a new doc.
-- **Hard rules:** keep the shell verbatim (`data-status-strip`, `data-package-nav`, footer `<time data-field="last-updated">`, and the three trailing `<script>` tags). Do not invent new block classes; do not add page-local CSS beyond the primitive overrides at the top of the template. Bump the footer date with a short scope phrase on every meaningful edit.
-- **Section composition is content-agnostic:** the template prescribes the shell and the primitives, not section count, section order, or section topics. A perf-fix doc can be one card; a full pipeline walk-through can be eight. Use only the primitives that earn their place.
-- **The exemplar:** `research_html/packages/2026-05-16-panda-pseudo-queries-multiview/docs/training_pipeline.html` is the reference for what a fully-fleshed-out doc looks like under this style.
+- **Rule 0 — analyze the topic before writing.** Open `research_html/templates/doc-style-guide.html` and work the three questions: (a) what is the hardest aspect of the topic to convey in prose? (b) what concrete entity grounds the abstraction (one named video, one query, one user)? (c) what invariant is hidden in the geometry (tensor shapes, codebook layout, route multiplicity)? Pick the visualization pattern that addresses (a). This is a hard precondition — drafting a doc without working Rule 0 is a workflow violation.
+- **Two-part standard:** (1) *text primitives* (`pre.diagram`, `pre.code`, `.callout`, `table.data-table`, `pill-mono`, `stage-title`) for narrative, code, glossary, structured data; (2) *visualization patterns* (side-by-side architecture, function-level flow SVG, state-cell grid, discrete-ID chip display, candidate-flow lanes, benefits-at-a-glance table) for content that prose alone obscures. The style guide documents all six visualization patterns with reusable CSS scaffolds + color/animation conventions.
+- **Visualization choice is topic-driven, not boilerplate.** Match the pattern to the topic. A 1-page perf-fix doc rarely needs more than one visualization; a multi-mechanism design doc justifies 3–5. Visualizations replace language where language fails — they are not decoration.
+- **Skeleton:** copy `research_html/templates/doc-template.html`. Replace the six template variables (`$package_id`, `$doc_title`, `$eyebrow`, `$lead`, `$last_updated`, `$root_prefix`), delete the demo `<section data-section="primitives">`, then write the doc's real sections. If the topic needs visualization, copy the relevant scaffold CSS (`.arch-grid`, `.cb-grid`, `.sid-chip`, `.cand-flow`, animation keyframes) from the top of `doc-style-guide.html` into the doc's page-local `<style>` block — only the patterns you actually use.
+- **Hard rules:** keep the shell verbatim (`data-status-strip`, `data-package-nav`, footer `<time data-field="last-updated">`, and the three trailing `<script>` tags). Page-local CSS is **permitted** for visualization scaffolds documented in the style guide; stay within the documented color palette (frozen blue, trained green, original red, proposed green, neutral cream, warm/cold/mixed for state). Animations must include `@media (prefers-reduced-motion: reduce)` fallback. Bump the footer date with a short scope phrase on every meaningful edit.
+- **Section composition is content-agnostic:** the template prescribes the shell + primitives, not section count, section order, or section topics. A perf-fix doc can be one card; a full pipeline walk-through can be 8–10 numbered steps. Lead with the visualization, then table, then prose — visual → reference → narrative.
+- **Reuse one concrete example across visualizations.** If the doc introduces `v_cook_42` in the arch diagram, also use it in the chip display, the candidate-flow lane, and the benefits framing. One mental model, threaded across patterns.
+- **Render-check before declaring done.** Run `google-chrome --headless --screenshot` on the doc and visually confirm SVG, tables, chips, and animations render correctly. Tag-balance lint alone is insufficient.
+- **The exemplars:**
+  - **Visual exemplar** (mandatory reread before designing a new doc): `research_html/packages/2026-05-25-multiview-workload-aware-sid-index/docs/hierarchical_sid_design.html` — the canonical use of all six visualization patterns (side-by-side architecture, function-level flow SVG with override-vs-fallback branches, codebook fragmentation cell grid, sID chip display, candidate-flow dedup lanes, benefits-at-a-glance).
+  - **Text exemplar**: `research_html/packages/2026-05-16-panda-pseudo-queries-multiview/docs/training_pipeline.html` — the reference for a fully-fleshed-out text-primitive-heavy doc.
 
 ## Runtime Ops
 
@@ -104,6 +170,12 @@ Any new HTML doc under `research_html/packages/<pkg-id>/docs/` MUST start from t
 - `pgrep`-based liveness checks must require **N consecutive negatives** before declaring the process dead, to avoid the kill-then-relaunch race during fork.
 - For any parallel CPU workload (numpy / faiss / sklearn / multiprocessing), prefix the launch with `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`. Benchmark 1-worker vs N-worker on a small slice before scaling; if N-worker is not >1.5× faster, do not fan out.
 - Launch wrappers must not use `set -e` around the sentinel-write step — an upstream failure must still flush the return-code sentinel so polling sees a terminal state.
+
+### Bunya GPU allocation by phase
+
+- **Smoke tests → interactive `salloc`.** Smokes are short-scale probes: env verification, throughput gates, single-step sanity, small-N pilots, S0-SMOKE-style cells, sentinel reruns. If the target node has multiple idle GPUs, request all of them on one salloc (e.g. `--gres=gpu:h100:2`) and fan smokes across the GPUs in parallel via `CUDA_VISIBLE_DEVICES=0` / `=1`. Release the salloc with `exit` as soon as the smoke phase finishes — do not hold an interactive lease idle while staging the next phase.
+- **Full / long-running runs → `sbatch`.** Reserved for budgeted production cells: multi-loop GRDR training, multi-shard captioning, full-scale eval exceeding the interactive QoS time limit, and any cell whose result will be cited in a `results.html` row. Record the verified SHA in the sbatch script (per the Code Alignment Rule).
+- The one-salloc-per-node ban still applies: a second interactive salloc cannot land on a host that already holds one of yours; pass `--exclude=<busy-nodes>` derived from `squeue --me`.
 
 ## Verification Discipline
 
@@ -186,45 +258,6 @@ Atomic per-turn closure: when any event above fires, the same turn touches all f
 - `learnings.html` rendering (purely derived; edit `assets/research.js` if the view itself needs to change).
 - Per-experiment status tracking inside `experiments[]` — that's the tracker's resource-allocation table, not `methodsTried`.
 - Brainstorm-direction notes — those live in `direction` and `contributionSpineFlag`, not in `methodsTried`.
-
-## Current Best
-
-Last updated: 2026-05-16
-
-### MSR-VTT
-- Variant: `fit_bucket_l010_g10_k20_s42` (seed 42)
-- Ckpt: `output/GRDR/bucket_candidate_k20/msrvtt/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt`
-- Setting 1 (beam 100, avg 130.73): CanHit@20/50/100/all = 52.8 / 74.5 / 86.5 / 91.0; XPool R@1/5/10 = 45.7 / 69.8 / 78.9
-- Setting 2 (beam 15, avg 300.41): CanHit@20/50/100/all = 4.6 / 15.0 / 32.0 / 64.3; XPool R@1/5/10 = 17.4 / 32.2 / 40.6
-- Setting 2 compact budget gate: `avg_candidates_per_query <= 310`; rows above are not comparable compact champions.
-
-### Panda (in-distribution Setting 1) — pre-trained anchor for zero-shot use
-- Variant: `panda_2150k_c4096l3_rq03_s42` (P14, 2.15M corpus, c=4096, l=3, seed 42, single-seed; multi-seed validation outstanding)
-- Ckpt: `output/GRDR/panda/champion_pretrained_zeroshot_c4096l3_2150k_s42/model-3-fit/best_model.pt` (hardlinked from `var/research/2026-05-11-panda-scaleup-zeroshot-scalability/output/GRDR/panda_2150k_c4096l3/panda/20260515012011-panda_2150k_c4096l3_rq03_s42/model-3-fit/best_model.pt`; same inode, both paths live)
-- Setting 1 seed 42 (beam 100, avg 103.93): CanHit@20/50/100/all = 80.70 / 90.52 / 95.57 / 95.77; MeanLogDiscount = 0.5493; train_test_collision = 0.477; sID utility = 0.975
-- Compact-budget gate: avg_candidates_per_query 103.93 (best Pareto across all measured 2.15M ckpts; −10.42 vs 1.65M c=1024 anchor with +2.02 CanHit@100 lift)
-- Promoted via `2026-05-11-panda-scaleup-zeroshot-scalability` package (success / ADOPTED 2026-05-16); supersedes the prior 818K c=512 P6 anchor for zero-shot use.
-
-### Panda (in-distribution, prior 818K 3-seed anchor, retained for reproducibility)
-- Variant: `panda_s1_p4_rq03_c512l3_s42` (P6 3-seed confirmed; seed 42 ckpt)
-- Ckpt: `var/research/2026-05-05-panda-setting1-full-run/output/GRDR/panda_setting1_p4/panda/20260509164015-panda_s1_p4_rq03_c512l3_s42/model-3-fit/best_model.pt`
-- Setting 1 seed 42 (beam 100, avg 125.95): CanHit@20/50/100/all = 75.54 / 86.95 / 92.80 / 94.01
-- Setting 1 3-seed mean (42/220/3407, beam 100, avg 127.15): CanHit@100 = 92.42 ± 0.38; FullSetHit@All = 93.83
-- Setting 2: not run.
-
-### Zero-shot transfer (4-dataset, BARS-on, X-Pool rerank) — pre-trained 2.15M c=4096 l=3 s42 vs supervised target
-| Dataset     | Setting | Pre-trained R@1 / R@5 / R@10 | Supervised target R@1 / R@5 / R@10 | Δ R@10 |
-| ----------- | :-----: | ---------------------------: | ---------------------------------: | :----: |
-| MSR-VTT     |    1    | 45.00 / 68.70 / 76.70        | 46.00 / 70.10 / 78.00              | −1.30  |
-| ActivityNet |    1    | 32.90 / 60.30 / 71.00        | 33.70 / 63.70 / 76.60              | −5.60  |
-| DiDeMo      |    1    | 39.48 / 66.20 / 74.28        | 39.90 / 65.80 / 74.20              | **+0.08** |
-| LSMDC       |    1    | 21.80 / 34.20 / 39.80        | 23.50 / 39.40 / 46.20              | −6.40  |
-| MSR-VTT     |    2    | 19.50 / 35.00 / 43.40        | 19.20 / 35.90 / 44.80              | −1.40  |
-| ActivityNet |    2    | 8.50 / 22.50 / 32.60         | 19.20 / 41.10 / 51.80              | −19.20 |
-| DiDeMo      |    2    | 19.24 / 33.70 / 38.38        | 15.50 / 29.70 / 36.10              | **+2.28** |
-| LSMDC       |    2    | 2.70 / 4.70 / 5.90           | 2.10 / 4.80 / 5.90                 | **0.00** |
-- 4-ds R@10 means: S1 65.44 vs 68.75 (gap −3.30); S2 30.07 vs 34.65 (gap −4.58). DiDeMo S2 exceeds supervised on every R@K; LSMDC S2 ties on R@10. ActivityNet S2 is the dominant remaining gap.
-- All 8 cells compact (avg_candidates_per_query ≤ 310; largest LSMDC S2 = 214.64). Single-seed s42 caveat applies.
 
 ## graphify
 

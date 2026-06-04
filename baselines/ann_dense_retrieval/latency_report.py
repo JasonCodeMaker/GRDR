@@ -65,7 +65,7 @@ def parse_args():
                    help='If set, use this XPool checkpoint for ALL files. '
                         'Otherwise per-file checkpoint is inferred from dataset.')
     p.add_argument('--output', type=str,
-                   default='output/reranker/latency_unified.json')
+                   default='output/evaluation_results/rerank/latency_unified.json')
     p.add_argument('--seed', type=int, default=42)
     return p.parse_args()
 

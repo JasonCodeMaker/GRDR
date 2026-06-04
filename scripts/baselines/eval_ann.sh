@@ -10,7 +10,7 @@ source_conda_sh
 DEVICE="${DEVICE:-0}"
 BATCH_SIZE="${BATCH_SIZE:-64}"
 INDEX_TYPE="${INDEX_TYPE:-hnsw}"
-OUTPUT_DIR="${OUTPUT_DIR:-output/ann_baseline}"
+OUTPUT_DIR="${OUTPUT_DIR:-output/evaluation_results/ann_baseline}"
 CANDIDATE_DIR="${CANDIDATE_DIR:-candidates}"
 RUN_STAGE1="${RUN_STAGE1:-1}"
 RUN_STAGE2="${RUN_STAGE2:-1}"

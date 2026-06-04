@@ -5,7 +5,7 @@ source /data2/uqzzha35/miniconda3/etc/profile.d/conda.sh
 DEVICE=0
 
 # # MSRVTT
-# EVAL_CHECKPOINT="output/GRDR/msrvtt/best_model/best_model.pt"
+# EVAL_CHECKPOINT="output/checkpoints/GRDR/msrvtt/best_model/best_model.pt"
 # CODE_BOOK_SIZE=128   
 # CODE_LENGTH=3        
 # BATCH_SIZE=1      
@@ -45,7 +45,7 @@ DEVICE=0
 # done
 
 # # ACTNET
-# EVAL_CHECKPOINT="output/GRDR/actnet/best_model/best_model.pt"
+# EVAL_CHECKPOINT="output/checkpoints/GRDR/actnet/best_model/best_model.pt"
 # CODE_BOOK_SIZE=128   
 # CODE_LENGTH=3        
 # BATCH_SIZE=32      
@@ -86,7 +86,7 @@ DEVICE=0
 
 
 # # DIDEMO
-# EVAL_CHECKPOINT="output/GRDR/didemo/best_model/best_model.pt"
+# EVAL_CHECKPOINT="output/checkpoints/GRDR/didemo/best_model/best_model.pt"
 # CODE_BOOK_SIZE=96   
 # CODE_LENGTH=3        
 # BATCH_SIZE=32      
@@ -126,7 +126,7 @@ DEVICE=0
 # done
 
 # LSMDC
-EVAL_CHECKPOINT="output/GRDR/lsmdc/best_model/best_model.pt"
+EVAL_CHECKPOINT="output/checkpoints/GRDR/lsmdc/best_model/best_model.pt"
 CODE_BOOK_SIZE=200   
 CODE_LENGTH=3        
 BATCH_SIZE=32      

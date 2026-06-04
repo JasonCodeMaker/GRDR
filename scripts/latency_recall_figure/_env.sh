@@ -8,7 +8,7 @@
 # REPO_ROOT self-locates from this file (scripts/latency_recall_figure/_env.sh).
 REPO_ROOT=${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 FUNC_DIR=${FUNC_DIR:-${REPO_ROOT}/scripts/latency_recall_figure}
-LATENCY_HELPERS_DIR=${LATENCY_HELPERS_DIR:-${FUNC_DIR}/lib}
+LATENCY_HELPERS_DIR=${LATENCY_HELPERS_DIR:-${FUNC_DIR}/utils}
 
 # Eval mode switch (full block + resolvers below). Defined early so the output trees can branch.
 # indist (default): per-dataset C=128/L=3, in-distribution — the canonical 'figures/' tree.
@@ -126,6 +126,9 @@ xpool_ckpt_for () {
 grdr_ckpt_for () {
     local ds="${1,,}"
     if [ "${ds}" = "msrvtt" ]; then echo "${GRDR_MSRVTT_INDIST_CKPT}"; return; fi
+    # Per-dataset one-off override hook: GRDR_<DS>_INDIST_CKPT (e.g. GRDR_LSMDC_INDIST_CKPT).
+    local ov="GRDR_${ds^^}_INDIST_CKPT"
+    if [ -n "${!ov:-}" ]; then echo "${!ov}"; return; fi
     local f
     f=$(find "${REPO_ROOT}/output/checkpoints/GRDR/${ds}" -path '*/model-3-fit/best_model.pt' 2>/dev/null | sort | tail -1)
     if [ -z "${f}" ]; then
@@ -138,7 +141,11 @@ grdr_ckpt_for () {
 # datasets on a uniform C=128 (c128l3). Pass the matching --code_num or torch silently fails to
 # load weights. (Pre-P3 fallback ckpts used ds-specific C: didemo=96, lsmdc=200.)
 grdr_code_num_for () {
-    case "${1,,}" in
+    local ds="${1,,}"
+    # Per-dataset one-off override hook: GRDR_<DS>_CODE_NUM (e.g. GRDR_LSMDC_CODE_NUM=200).
+    local ov="GRDR_${ds^^}_CODE_NUM"
+    if [ -n "${!ov:-}" ]; then echo "${!ov}"; return; fi
+    case "${ds}" in
         msrvtt) echo 128 ;;
         actnet) echo 128 ;;
         didemo) echo 128 ;;

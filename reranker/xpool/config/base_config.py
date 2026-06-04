@@ -58,6 +58,9 @@ class Config(ABC):
         self.expanded_pool = args.expanded_pool
         self.use_cached_video_features = args.use_cached_video_features
         self.video_cache_dir = args.video_cache_dir
+        self.panda_use_pseudo_queries = getattr(args, 'panda_use_pseudo_queries', False)
+        self.panda_distractor_manifest = getattr(args, 'panda_distractor_manifest', None)
+        self.pool_batch_size = getattr(args, 'pool_batch_size', 64)
     
     @abstractmethod
     def parse_args(self):

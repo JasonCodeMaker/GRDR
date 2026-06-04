@@ -30,7 +30,7 @@ phase_aggregate () {
     ( \
         # shellcheck disable=SC1090
         source "${CONDA_SH}" && conda activate "${SEMANTICTVR_ENV}" && \
-        "${PYTHON}" "${FUNC_DIR}/aggregate_figure_csv.py" \
+        "${PYTHON}" "${FUNC_DIR}/utils/aggregate_figure_csv.py" \
             --runtime_root "${RUNTIME_ROOT}" \
             --cand_grdr_root "${CAND_GRDR_ROOT}" \
             --cand_base_root "${CAND_BASE_ROOT}" \
@@ -47,14 +47,14 @@ phase_render () {
     ( \
         # shellcheck disable=SC1090
         source "${CONDA_SH}" && conda activate "${SEMANTICTVR_ENV}" && \
-        "${PYTHON}" "${FUNC_DIR}/render_figures.py" \
+        "${PYTHON}" "${FUNC_DIR}/utils/render_figures.py" \
             --csv "${RUNTIME_ROOT}/summaries/figure_data.csv" \
             --out_dir "${RUNTIME_ROOT}/figures" \
     )
 }
 
 phase_lint () {
-    "${PYTHON}" "${FUNC_DIR}/lint_figure_data.py" \
+    "${PYTHON}" "${FUNC_DIR}/utils/lint_figure_data.py" \
         --csv "${RUNTIME_ROOT}/summaries/figure_data.csv" \
         --runtime_root "${RUNTIME_ROOT}"
 }

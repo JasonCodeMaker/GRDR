@@ -184,7 +184,7 @@ def main():
                         help='Path to model checkpoint')
     custom_parser.add_argument('--expanded_pool', action='store_true',
                         help='Add training videos to search pool')
-    custom_parser.add_argument('--report_dir', type=str, default='output/reranker',
+    custom_parser.add_argument('--report_dir', type=str, default='output/evaluation_results/rerank',
                         help='Directory for CSV/JSON reports')
     custom_parser.add_argument('--summary_csv', type=str, default=None,
                         help='Optional path for structured summary CSV')
@@ -203,6 +203,12 @@ def main():
     custom_parser.add_argument('--latency_helpers_dir', type=str,
                         default='research_html/packages/2026-05-15-panda-baselines/scripts',
                         help='Path containing latency_helpers.py')
+    custom_parser.add_argument('--skip_cache_miss', action='store_true',
+                        help='Drop candidates that miss the .npz cache instead of '
+                             'falling back to on-the-fly extraction. Required when '
+                             'rerank consumes candidate JSONs from a baseline whose '
+                             'id format differs from the X-Pool cache layout (e.g. '
+                             'EERCF-LSMDC doubled-prefix ids).')
 
     custom_args, _ = custom_parser.parse_known_args()
     if custom_args.cache_dir in ("", "none", "None", "null", "NULL"):
@@ -336,7 +342,8 @@ def main():
         videos_dir=config.videos_dir,
         candidates_file=candidates_file,
         device='cuda' if torch.cuda.is_available() else 'cpu',
-        excluded_videos=excluded_videos
+        excluded_videos=excluded_videos,
+        skip_cache_miss=custom_args.skip_cache_miss,
     )
 
     # Evaluate queries one at a time

@@ -18,6 +18,10 @@ class AllConfig(Config):
         parser.add_argument('--msrvtt_train_file', type=str, default='9k')
         parser.add_argument('--panda_use_pseudo_queries', action='store_true', default=False,
                             help="PANDA only: train on panda_ret_train_addition.json (P7 pseudo-queries). Default off uses panda_ret_train.json (original 2.15M captions).")
+        parser.add_argument('--panda_distractor_manifest', type=str, default=None,
+                            help="PANDA only: JSON file with {'video_ids': [...]} restricting the expanded_pool train list. Used by P1.c distractor sweeps.")
+        parser.add_argument('--pool_batch_size', type=int, default=64,
+                            help="Text-batch size for transformer pool_frames during eval. Lower this on large expanded pools to control CPU memory (pooled_batch ~ N_vids * pool_batch_size * 512 * 4 bytes).")
         parser.add_argument('--num_frames', type=int, default=12)
         parser.add_argument('--video_sample_type', default='uniform', help="'rand'/'uniform'")
         parser.add_argument('--input_res', type=int, default=224)
@@ -74,7 +78,7 @@ class AllConfig(Config):
                             help='Base directory containing cached video features; defaults to the architecture-specific cache root')
 
         # result saving parameters
-        parser.add_argument('--result_file', type=str, default='test_results.csv', help='Filename for CSV results (saved to output/reranker/)')
+        parser.add_argument('--result_file', type=str, default='test_results.csv', help='Filename for CSV results (saved to output/evaluation_results/rerank/)')
 
         # system parameters
         parser.add_argument('--num_workers', type=int, default=8)

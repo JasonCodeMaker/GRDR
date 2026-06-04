@@ -70,7 +70,7 @@ python download_features.py --xpool --xpool-features --datasets msrvtt
 
 ```bash
 python run.py --eval --dataset msrvtt \
-    --eval_checkpoint output/GRDR/msrvtt/best_model/best_model.pt \
+    --eval_checkpoint output/checkpoints/GRDR/msrvtt/best_model/best_model.pt \
     --code_num 128 --max_length 3 --num_candidates 100 --setting 1
 ```
 

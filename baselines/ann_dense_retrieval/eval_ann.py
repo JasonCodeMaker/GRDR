@@ -50,7 +50,7 @@ def parse_args():
                         default='reranker/xpool/ckpt/msrvtt9k_model_best.pth')
     parser.add_argument('--cache_dir', type=str,
                         default='reranker/xpool/video_features_cache/Xpool')
-    parser.add_argument('--output_dir', type=str, default='output/ann_baseline')
+    parser.add_argument('--output_dir', type=str, default='output/evaluation_results/ann_baseline')
     parser.add_argument('--index_dir', type=str, default=None,
                         help='Directory to store offline ANN index artifacts. '
                              'Defaults to <output_dir>/indexes.')
@@ -599,8 +599,11 @@ def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k)
     retrieved = np.full((n, k), -1, dtype=np.int64)
     distances = np.full((n, k), -np.inf, dtype=np.float32)
     total_search_s = 0.0
+    # Warm-cache by default: build the vector store ONCE so cross-query reuse
+    # makes Pass-A effectiveness sweeps fast. Latency contract is owned by the
+    # separate --per_query_timing path (search_per_query), which resets per query.
+    vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
     for i in tqdm(range(n), desc="Searching queries"):
-        vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
         t0 = time.perf_counter()
         rows, scores, _ = search_manual(
             query_embs[i], structure, idx_type, args, vector_store, k)
@@ -651,6 +654,10 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
             break
         t_total = time.perf_counter()
         emb, t_enc = encode_text_per_query(captions[i], model, tokenizer, device)
+        # Cold-start by design: the store is reset per query, so the reported
+        # latency includes re-reading + re-pooling each scored video from disk
+        # (video_load dominates similarity). This conflates feature I/O with ANN
+        # compute; a deployed index would hold pooled vectors in RAM.
         vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
         query_vec = normalize(emb)[0]
         t0 = time.perf_counter()
@@ -719,8 +726,14 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
                         pool_ids, num_candidates, metrics, args, idx_type,
                         out_path, per_query_timings=None):
     """Save candidate JSON in the same shape used by reranker/xpool/test.py."""
+    # Pass-B cap may stop the per-query loop early, leaving per_query_timings
+    # shorter than the preallocated retrieved/distances arrays. Bound the save
+    # loop to the actual processed count so save_candidate_json doesn't IndexError.
+    n_iter = len(valid_captions)
+    if per_query_timings is not None:
+        n_iter = min(n_iter, len(per_query_timings))
     results = []
-    for i in range(len(valid_captions)):
+    for i in range(n_iter):
         cands = [pool_ids[j] for j in retrieved[i, :num_candidates] if j >= 0]
         scores = [float(distances[i, j])
                   for j in range(min(num_candidates, len(cands)))]
@@ -747,6 +760,8 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
     gt_in = sum(1 for r in results
                 if r['ground_truth_video_id'] in r['candidates'])
     recall_at_k = gt_in / len(results) if results else 0
+    avg_candidates_per_query = (
+        sum(r['num_candidates'] for r in results) / len(results) if results else 0)
     metadata = {
         'method': f'ann_{idx_type}',
         'dataset': args.dataset,
@@ -812,6 +827,7 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
             'Recall@5': metrics['R@5'] / 100,
             'Recall@10': metrics['R@10'] / 100,
             'total_queries': len(results),
+            'avg_candidates_per_query': avg_candidates_per_query,
         },
         'results': results,
     }

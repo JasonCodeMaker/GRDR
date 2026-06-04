@@ -144,6 +144,12 @@ class DataFactory:
             return video_ids, config.videos_dir, '.mp4', None
 
         elif config.dataset_name == "PANDA":
+            manifest_path = getattr(config, 'panda_distractor_manifest', None)
+            if manifest_path:
+                payload = load_json(manifest_path)
+                raw_ids = payload.get('video_ids', payload) if isinstance(payload, dict) else payload
+                video_ids = [vid.replace('.mp4', '') for vid in raw_ids]
+                return video_ids, config.videos_dir, '.mp4', None
             annotations = load_json(_panda_train_json_path(config))
             seen = set()
             video_ids = []

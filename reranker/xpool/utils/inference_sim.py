@@ -587,7 +587,7 @@ def main():
                         help='Frame pooling strategy')
     parser.add_argument('--video_batch_size', type=int, default=5000,
                         help='Batch size for video processing (matches evaluator.py default)')
-    parser.add_argument('--output', type=str, default='output/reranker/latency_simulation_results',
+    parser.add_argument('--output', type=str, default='output/evaluation_results/rerank/latency_simulation_results',
                         help='Output path for results JSON')
     parser.add_argument('--checkpoint', type=str,
                         default='reranker/xpool/ckpt/msrvtt9k_model_best.pth',
