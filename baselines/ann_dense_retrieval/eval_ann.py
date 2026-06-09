@@ -35,7 +35,10 @@ ANN_BASELINE_NUM_CANDIDATES = {
     ('didemo', 1): 100, ('didemo', 2): 100,
     ('lsmdc',  1): 100, ('lsmdc',  2): 100,
 }
-SUPPORTED_INDEX_TYPES = ('hnsw', 'ivf')
+SUPPORTED_INDEX_TYPES = ('hnsw', 'ivf', 'ivfpq', 'opq')
+# PQ-compressed types score against resident PQ codes via FAISS-native ADC
+# (index.search), NOT the manual structure + cold QueryVideoStore reload path.
+PQ_INDEX_TYPES = ('ivfpq', 'opq')
 LSMDC_BAD_CLIP_ID = '1012_Unbreakable_00.05.16.065-00.05.21.941'
 
 
@@ -69,6 +72,11 @@ def parse_args():
     parser.add_argument('--hnsw_ef_search', type=int, default=128)
     parser.add_argument('--ivf_nlist', type=int, default=100)
     parser.add_argument('--ivf_nprobe', type=int, default=10)
+    parser.add_argument('--pq_m', type=int, default=64,
+                        help='PQ sub-quantizer count for ivfpq/opq; at nbits=8 this is '
+                             'bytes/vector (64/32/16). Must divide the feature dim.')
+    parser.add_argument('--pq_nbits', type=int, default=8,
+                        help='Bits per PQ sub-quantizer (8 -> 1 byte each -> pq_m bytes/vector).')
     parser.add_argument('--num_candidates', type=int, default=None,
                         help='K for candidate output. Defaults to ANN_BASELINE_NUM_CANDIDATES[(ds,setting)] if unset.')
     parser.add_argument('--candidate_dir', type=str, default='candidates')
@@ -387,11 +395,45 @@ def build_ivf_index(embeddings, nlist=100, nprobe=10):
     return index
 
 
+def build_ivfpq_index(embeddings, nlist=100, nprobe=10, pq_m=64, pq_nbits=8):
+    """IVF-PQ: coarse IVF list + PQ-compressed residual codes, resident (inner product)."""
+    n, dim = embeddings.shape
+    nlist = min(nlist, max(1, n // 4))
+    nprobe = min(nprobe, nlist)
+    index = faiss.index_factory(
+        dim, f"IVF{nlist},PQ{pq_m}x{pq_nbits}", faiss.METRIC_INNER_PRODUCT)
+    normed = normalize(embeddings)
+    index.train(normed)
+    index.add(normed)
+    faiss.extract_index_ivf(index).nprobe = nprobe
+    return index
+
+
+def build_opq_ivfpq_index(embeddings, nlist=100, nprobe=10, pq_m=64, pq_nbits=8):
+    """OPQ rotation + IVF-PQ via index_factory, resident codes (inner product)."""
+    n, dim = embeddings.shape
+    nlist = min(nlist, max(1, n // 4))
+    nprobe = min(nprobe, nlist)
+    index = faiss.index_factory(
+        dim, f"OPQ{pq_m},IVF{nlist},PQ{pq_m}x{pq_nbits}", faiss.METRIC_INNER_PRODUCT)
+    normed = normalize(embeddings)
+    index.train(normed)
+    index.add(normed)
+    faiss.extract_index_ivf(index).nprobe = nprobe
+    return index
+
+
 def build_index(embeddings, idx_type, args):
     if idx_type == 'hnsw':
         return build_hnsw_index(embeddings, M=args.hnsw_m, ef_search=args.hnsw_ef_search)
     if idx_type == 'ivf':
         return build_ivf_index(embeddings, nlist=args.ivf_nlist, nprobe=args.ivf_nprobe)
+    if idx_type == 'ivfpq':
+        return build_ivfpq_index(embeddings, nlist=args.ivf_nlist, nprobe=args.ivf_nprobe,
+                                 pq_m=args.pq_m, pq_nbits=args.pq_nbits)
+    if idx_type == 'opq':
+        return build_opq_ivfpq_index(embeddings, nlist=args.ivf_nlist, nprobe=args.ivf_nprobe,
+                                     pq_m=args.pq_m, pq_nbits=args.pq_nbits)
     raise ValueError(f"Unsupported ANN index type: {idx_type}")
 
 
@@ -829,6 +871,109 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
     return metrics, retrieved, distances, timings
 
 
+def search_resident_batched(index, query_embs, gt_indices, k):
+    """Effectiveness path for PQ types: ADC search over resident codes, all queries at once."""
+    q = normalize(query_embs).astype(np.float32)
+    n = len(q)
+    t0 = time.perf_counter()
+    distances, retrieved = index.search(q, k)
+    total_search_s = time.perf_counter() - t0
+    retrieved = retrieved.astype(np.int64)
+    distances = distances.astype(np.float32)
+    ranks = np.full(n, k + 1, dtype=np.float64)
+    for i in range(n):
+        if gt_indices[i] < 0:
+            continue
+        m = np.where(retrieved[i] == gt_indices[i])[0]
+        if len(m) > 0:
+            ranks[i] = m[0]
+    metrics = compute_metrics(ranks)
+    metrics['search_time_total_s'] = float(total_search_s)
+    metrics['search_time_per_query_ms'] = 1000.0 * total_search_s / max(n, 1)
+    metrics['queries_per_sec'] = n / total_search_s if total_search_s > 0 else 0
+    return metrics, retrieved, distances, None
+
+
+def search_resident_per_query(index, captions, model, tokenizer, device, args, gt_indices, k):
+    """Latency path for PQ types: batch=1 encode + resident ADC search; no video reload."""
+    n = len(captions)
+    retrieved = np.full((n, k), -1, dtype=np.int64)
+    distances = np.full((n, k), -np.inf, dtype=np.float32)
+    timings = []
+
+    print(f"  Warmup text encoder only: {args.num_warmup} queries (excluded from timing)")
+    for i in range(min(args.num_warmup, n)):
+        _ = encode_text_per_query(captions[i], model, tokenizer, device)
+
+    print(f"  Per-query timing (resident PQ): {n} queries "
+          f"(batch=1 encode + resident index.search, no video reload)")
+    wall_cap_s = float(getattr(args, 'wall_time_cap_s', 1e18))
+    cap_t0 = time.perf_counter()
+    cap_hit = False
+    n_processed = 0
+    for i in tqdm(range(n), desc="Per-query (resident)"):
+        if (time.perf_counter() - cap_t0) >= wall_cap_s:
+            cap_hit = True
+            break
+        t_total = time.perf_counter()
+        emb, t_enc = encode_text_per_query(captions[i], model, tokenizer, device)
+        q = normalize(emb).astype(np.float32)
+        t0 = time.perf_counter()
+        d, r = index.search(q, k)
+        t_search = time.perf_counter() - t0
+        retrieved[i] = r[0].astype(np.int64)
+        distances[i] = d[0].astype(np.float32)
+        timings.append({
+            'encode_s': t_enc,
+            'index_load_s': 0.0,
+            'video_load_s': 0.0,
+            'video_pool_s': 0.0,
+            'similarity_s': t_search,
+            'search_s': t_search,
+            'total_s': time.perf_counter() - t_total,
+            'vectors_scored': 0,
+            'lists_probed': 0,
+            'visited_nodes': 0,
+            'disk_reads': 0,
+        })
+        n_processed += 1
+
+    ranks = np.full(n, k + 1, dtype=np.float64)
+    for i in range(n):
+        if gt_indices[i] < 0:
+            continue
+        m = np.where(retrieved[i] == gt_indices[i])[0]
+        if len(m) > 0:
+            ranks[i] = m[0]
+    metrics = compute_metrics(ranks)
+    enc_arr = np.array([t['encode_s'] for t in timings])
+    sea_arr = np.array([t['search_s'] for t in timings])
+    total_arr = np.array([t['total_s'] for t in timings])
+    metrics['encode_time_per_query_ms_mean'] = float(1000.0 * enc_arr.mean())
+    metrics['encode_time_per_query_ms_std'] = float(1000.0 * enc_arr.std())
+    metrics['index_load_time_per_query_ms_mean'] = 0.0
+    metrics['index_load_time_per_query_ms_std'] = 0.0
+    metrics['video_load_time_per_query_ms_mean'] = 0.0
+    metrics['video_load_time_per_query_ms_std'] = 0.0
+    metrics['video_pool_time_per_query_ms_mean'] = 0.0
+    metrics['video_pool_time_per_query_ms_std'] = 0.0
+    metrics['similarity_time_per_query_ms_mean'] = float(1000.0 * sea_arr.mean())
+    metrics['similarity_time_per_query_ms_std'] = float(1000.0 * sea_arr.std())
+    metrics['search_time_per_query_ms_mean'] = float(1000.0 * sea_arr.mean())
+    metrics['search_time_per_query_ms_std'] = float(1000.0 * sea_arr.std())
+    metrics['online_time_per_query_ms_mean'] = float(1000.0 * total_arr.mean())
+    metrics['online_time_per_query_ms_std'] = float(1000.0 * total_arr.std())
+    metrics['search_time_total_s'] = float(sea_arr.sum())
+    metrics['online_time_total_s'] = float(total_arr.sum())
+    metrics['queries_per_sec'] = float(n / max(total_arr.sum(), 1e-9))
+    metrics['structure_load_time_s'] = 0.0
+    metrics['pass_b_n_processed'] = int(n_processed)
+    metrics['pass_b_n_target'] = int(n)
+    metrics['pass_b_cap_hit'] = bool(cap_hit)
+    metrics['pass_b_wall_seconds'] = float(time.perf_counter() - cap_t0)
+    return metrics, retrieved, distances, timings
+
+
 def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
                         pool_ids, num_candidates, metrics, args, idx_type,
                         out_path, per_query_timings=None):
@@ -1110,48 +1255,76 @@ def main():
         index = build_index(video_embs, idx_type, args)
         build_time = time.perf_counter() - t0
         print(f"Index built in {build_time:.2f}s ({index.ntotal} vectors)")
-        index_path = index_path_for(args.index_dir, idx_type, args.dataset, args.setting)
-        meta_path = index_meta_path_for(args.index_dir, idx_type, args.dataset, args.setting)
-        id_map_path = index_id_map_path_for(args.index_dir, idx_type, args.dataset, args.setting)
-        save_index_artifacts(
-            index,
-            index_path,
-            meta_path,
-            id_map_path,
-            idx_type,
-            args,
-            valid_pool_ids,
-            video_embedding_load_time_s,
-            build_time,
-        )
-        print(f"Offline structure saved to: {index_path}")
-        del index
-        saved_pool_ids = load_saved_id_map(id_map_path)
-        index_artifacts[idx_type] = {
-            'structure_path': index_path,
-            'metadata_path': meta_path,
-            'id_map_path': id_map_path,
-        }
-
-        if args.per_query_timing:
-            metrics, retrieved, distances, per_query_timings = search_per_query(
-                test_captions, clip_model, tokenizer, device, index_path,
-                saved_pool_ids,
-                idx_type, args, gt_indices, search_k, args.num_warmup)
+        if idx_type in PQ_INDEX_TYPES:
+            # FAISS-native resident path: storage = true serialized index bytes
+            # (== faiss.write_index footprint); search via ADC over resident codes,
+            # no manual structure extraction and no cold QueryVideoStore reload.
+            index_bytes = int(faiss.serialize_index(index).nbytes)
+            bytes_per_video = float(index_bytes / max(index.ntotal, 1))
+            saved_pool_ids = valid_pool_ids
+            index_artifacts[idx_type] = {
+                'faiss_index_bytes': index_bytes,
+                'bytes_per_video': bytes_per_video,
+                'pq_m': int(args.pq_m),
+                'pq_nbits': int(args.pq_nbits),
+            }
+            if args.per_query_timing:
+                metrics, retrieved, distances, per_query_timings = search_resident_per_query(
+                    index, test_captions, clip_model, tokenizer, device, args,
+                    gt_indices, search_k)
+            else:
+                metrics, retrieved, distances, per_query_timings = search_resident_batched(
+                    index, query_embs, gt_indices, search_k)
+                metrics['index_load_time_s'] = 0.0
+                metrics['structure_load_time_s'] = 0.0
+            metrics['index_bytes'] = index_bytes
+            metrics['bytes_per_video'] = bytes_per_video
+            print(f"Resident PQ index: {index_bytes} bytes "
+                  f"({bytes_per_video:.2f} B/video, pq_m={args.pq_m})")
+            del index
         else:
-            t0 = time.perf_counter()
-            structure = load_saved_structure(index_path, idx_type)
-            structure_load_time_s = time.perf_counter() - t0
-            # Panda uses an in-memory store (features pre-loaded) because cached npz
-            # live under test/ vs train/ subdirs that the disk-reload store can't resolve.
-            vstore = (InMemoryVideoStore(video_embs)
-                      if args.feature_backbone == 'internvideo2' or args.dataset == 'panda'
-                      else None)
-            metrics, retrieved, distances, per_query_timings = search_batched(
-                query_embs, structure, saved_pool_ids, idx_type, args, gt_indices, search_k,
-                vector_store=vstore)
-            metrics['index_load_time_s'] = float(structure_load_time_s)
-            metrics['structure_load_time_s'] = float(structure_load_time_s)
+            index_path = index_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+            meta_path = index_meta_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+            id_map_path = index_id_map_path_for(args.index_dir, idx_type, args.dataset, args.setting)
+            save_index_artifacts(
+                index,
+                index_path,
+                meta_path,
+                id_map_path,
+                idx_type,
+                args,
+                valid_pool_ids,
+                video_embedding_load_time_s,
+                build_time,
+            )
+            print(f"Offline structure saved to: {index_path}")
+            del index
+            saved_pool_ids = load_saved_id_map(id_map_path)
+            index_artifacts[idx_type] = {
+                'structure_path': index_path,
+                'metadata_path': meta_path,
+                'id_map_path': id_map_path,
+            }
+
+            if args.per_query_timing:
+                metrics, retrieved, distances, per_query_timings = search_per_query(
+                    test_captions, clip_model, tokenizer, device, index_path,
+                    saved_pool_ids,
+                    idx_type, args, gt_indices, search_k, args.num_warmup)
+            else:
+                t0 = time.perf_counter()
+                structure = load_saved_structure(index_path, idx_type)
+                structure_load_time_s = time.perf_counter() - t0
+                # Panda uses an in-memory store (features pre-loaded) because cached npz
+                # live under test/ vs train/ subdirs that the disk-reload store can't resolve.
+                vstore = (InMemoryVideoStore(video_embs)
+                          if args.feature_backbone == 'internvideo2' or args.dataset == 'panda'
+                          else None)
+                metrics, retrieved, distances, per_query_timings = search_batched(
+                    query_embs, structure, saved_pool_ids, idx_type, args, gt_indices, search_k,
+                    vector_store=vstore)
+                metrics['index_load_time_s'] = float(structure_load_time_s)
+                metrics['structure_load_time_s'] = float(structure_load_time_s)
 
         metrics['video_embedding_load_time_s'] = float(video_embedding_load_time_s)
         metrics['build_time_s'] = build_time
