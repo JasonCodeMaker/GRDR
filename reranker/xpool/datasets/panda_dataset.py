@@ -1,4 +1,5 @@
 import os
+import torch
 import ujson as json
 from collections import defaultdict
 from torch.utils.data import Dataset
@@ -38,6 +39,8 @@ class PandaDataset(Dataset):
             annotations = json.load(f)
 
         self.entries = annotations
+        # candidate_mask is generated in test.py after the expanded_pool decision
+        self.candidate_mask = None
         if split_type == 'train':
             self.vid2caption = defaultdict(list)
             for row in annotations:
@@ -72,3 +75,34 @@ class PandaDataset(Dataset):
             caption = row['caption']
         video_path = resolve_media_path('PANDA', self.videos_dir, vid, split_type=self.split_type)
         return video_path, caption, strip_media_extension(vid)
+
+    def _generate_candidate_mask(self, candidate_file, extra_vid_ids=None):
+        """Boolean mask [num_test, 1, num_all] True only at each test query's stage-1 candidates (Panda test is 1:1)."""
+        def bare(v):
+            return strip_media_extension(v).split('/')[-1]
+
+        with open(candidate_file) as f:
+            candidate_data = json.load(f)
+        # Match by ground-truth video id (robust to duplicate captions); candidate ids are bare.
+        gt_to_candidates = {r['ground_truth_video_id']: set(r['candidates']) for r in candidate_data['results']}
+
+        # Column order MUST mirror the trainer's video-embedding matrix: test entries (in order),
+        # then expanded-pool extra_vid_ids (deduped against test, as in the other dataset masks).
+        test_ids = [bare(e['video']) for e in self.entries]
+        col_ids = list(test_ids)
+        if extra_vid_ids is not None:
+            test_set = set(test_ids)
+            for v in extra_vid_ids:
+                vb = bare(v)
+                if vb not in test_set:
+                    col_ids.append(vb)
+        col_index = {v: i for i, v in enumerate(col_ids)}
+        num_test, num_all = len(test_ids), len(col_ids)
+
+        candidate_mask = torch.zeros(num_test, 1, num_all, dtype=torch.bool)
+        for i, vid in enumerate(test_ids):
+            for c in gt_to_candidates.get(vid, ()):  # bare candidate id -> column
+                j = col_index.get(c)
+                if j is not None:
+                    candidate_mask[i, 0, j] = True
+        return candidate_mask

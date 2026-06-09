@@ -37,6 +37,19 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 - A valid Setting 2 champion must beat the current compact reference under the same budget gate, improve downstream X-Pool rerank or reduce candidate-pool size without rerank regression, and pass multi-seed validation. Do not promote a single-seed tie or a `+0.1` `CanHit@100` change.
 - Required Setting 2 readout: `avg/p95/max candidates`, `CanHit@20/50/100`, `FullSetHit@All`, `OverflowHit`, `route_miss`, `MeanLogDiscount`, top-100-truncated X-Pool, full-candidate X-Pool, and whether any X-Pool gain is caused by larger pool size.
 
+## Trustworthy Auto-Research Pipeline (attached 2026-06-05)
+
+This repo is managed by the Trustworthy Auto-Research Pipeline toolbox (the `/research-*` skills, symlinked into `~/.claude/skills/` from the toolbox repo). Its five operating protocols — Research Workflow (`WORKFLOW.md`), Research Output Contract, Fact Propagation, Learnings Update, and Refinement Guardrails — are already detailed in the sections below and remain authoritative. The toolbox adds one governance layer on top of them:
+
+- **Scope SSOT** (`outputs/_scope/transitions.jsonl`) — the versioned, user-owned intent store: Project → Direction → Task. The agent only *proposes* nodes; the user *ratifies*. Nothing enters Scope without explicit acceptance.
+- **Triage** (`outputs/_scope/triage.jsonl`) — the pending/disposed proposal queue. A Direction or Task becomes durable only after its Triage proposal is accepted and committed into the Scope SSOT; a package is materialized only from committed Scope, never from a pending proposal.
+- **`/research-auto` front door** — the post-init orchestrator. It runs an A–G admission check (dashboard → Project → Direction → Task → package → readiness → loop), advances one legal step per call, and runs the mechanical Scope/Triage commands only after the user ratifies.
+- **Autonomy dial** — `supervised` / `checkpoints` / `async` / `autonomous` (new Tasks default to `autonomous`). It controls pause frequency only and never weakens a correctness gate; a Project/Direction scope change auto-reverts affected Tasks to `supervised`.
+- **Context Pack** — deterministic, read-only project memory: human face `research_html/context.html`, durable core `research_html/data/context-core.js` (agent face `context_pack.md`). It never lands a rule by itself.
+- **Self-evolution memory** (`outputs/_selfevolve/`) — a governed Rule Store (live: `observed → candidate → validating → provisional → active`) plus a gated-off Skill Store. Only `active` rules enter the Context Pack; `/research-reflect` proposes, `/research-apply` lands with user approval.
+
+Path convention: package runtime state stays under GRDR's existing `var/research/<pkg>/` and packages under `research_html/packages/<id>/`; only the Scope and self-evolution stores live under `outputs/_scope/` and `outputs/_selfevolve/`. `research-op` is the single mutation surface for package surfaces.
+
 ## Research Workflow
 
 `WORKFLOW.md` at the repo root is the operating protocol for any `@WORKFLOW.md` invocation and overrides general harness defaults (e.g., "do not spawn agents unless asked", end-of-turn-summary style). Strictly follow it: when it says dispatch a subagent, dispatch; when it says emit a 10-minute status line, emit it; when it says schedule re-entry, schedule.

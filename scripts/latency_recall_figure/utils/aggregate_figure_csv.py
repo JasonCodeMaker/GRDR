@@ -14,13 +14,13 @@ from typing import Any
 METHODS = ["grdr_ref", "tiger", "avg", "t2vindexer", "eercf", "hnsw", "ivf"]
 DATASETS = ["MSRVTT", "ACTNET", "DIDEMO", "LSMDC"]
 DEFAULT_OPS = {
-    "grdr_ref":   [20, 50, 100, 200, 300, 400],
-    "tiger":      [20, 50, 100, 200],
-    "avg":        [20, 50, 100, 200],
-    "t2vindexer": [20, 50, 100, 200],
+    "grdr_ref":   [20, 50, 100, 200, 300],
+    "tiger":      [20, 50, 100, 200, 300],
+    "avg":        [20, 50, 100, 200, 300],
+    "t2vindexer": [20, 50, 100, 200, 300],
     "eercf":      [50],
-    "hnsw":       [20, 40, 100, 200],
-    "ivf":        [20, 40, 100, 200],
+    "hnsw":       [20, 40, 100, 200, 300],
+    "ivf":        [20, 40, 100, 200, 300],
 }
 OP_KNOB = {
     "grdr_ref":   "beam",

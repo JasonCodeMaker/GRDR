@@ -31,12 +31,14 @@ candidates/_backup
 /output
 /var
 /wandb/
+/outputs
 
 # Generated candidates
 /candidates/baseline/
 /candidates/baselines/
 /candidates/GRDR/*/
 /candidates/*_ann_*_candidates_t*.json
+/candidates/panda_c*_candidates_t*.json
 
 scripts/panda
 

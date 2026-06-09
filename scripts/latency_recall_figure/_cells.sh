@@ -7,8 +7,8 @@
 
 default_ops_for () {
     case "$1" in
-        grdr_ref)                      echo "20 50 100 200 300 400" ;;
-        tiger|avg|t2vindexer)          echo "20 50 100 200" ;;
+        grdr_ref)                      echo "20 50 100 200 300" ;;
+        tiger|avg|t2vindexer)          echo "20 50 100 200 300" ;;
         eercf)                         echo "1 10 25 50" ;;
         hnsw)                          echo "20 40 100 200" ;;
         ivf)                           echo "20 40 100 200" ;;

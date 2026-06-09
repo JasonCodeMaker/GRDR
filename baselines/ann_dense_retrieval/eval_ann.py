@@ -16,6 +16,7 @@ import csv
 import heapq
 import json
 import os
+import pickle
 import re
 import time
 
@@ -41,11 +42,18 @@ LSMDC_BAD_CLIP_ID = '1012_Unbreakable_00.05.16.065-00.05.21.941'
 def parse_args():
     parser = argparse.ArgumentParser(description="ANN Dense Retrieval Baseline")
     parser.add_argument('--dataset', type=str, default='msrvtt',
-                        choices=['msrvtt', 'actnet', 'didemo', 'lsmdc'])
+                        choices=['msrvtt', 'actnet', 'didemo', 'lsmdc', 'panda'])
     parser.add_argument('--setting', type=int, default=1, choices=[1, 2],
                         help='1=test-only pool, 2=train+test combined pool')
     parser.add_argument('--index_type', type=str, default='all',
                         choices=[*SUPPORTED_INDEX_TYPES, 'all'])
+    parser.add_argument('--feature_backbone', type=str, default='xpool_clip',
+                        choices=['xpool_clip', 'internvideo2'],
+                        help='Stage-1 feature backbone. xpool_clip=mean-pooled X-Pool CLIP '
+                             '(default, live text encode). internvideo2=pre-extracted '
+                             'InternVideo2 video+text embeddings (effectiveness-only / Pass-A).')
+    parser.add_argument('--features_root', type=str, default='dataset/features',
+                        help='Root for pre-extracted features (InternVideo2/<ds>/*.pkl).')
     parser.add_argument('--checkpoint', type=str,
                         default='reranker/xpool/ckpt/msrvtt9k_model_best.pth')
     parser.add_argument('--cache_dir', type=str,
@@ -86,14 +94,22 @@ def parse_args():
                         help='Directory containing latency_helpers.py')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Optional override path for the Pass-B candidate JSON output')
+    parser.add_argument('--distractor_manifest', type=str, default=None,
+                        help='Panda pool-scaling manifest (panda_pool_d<D>.json). When set, the '
+                             'Setting-2 pool = test base videos + manifest.video_ids (first-d '
+                             'distractors, train/ prefix stripped). Panda only.')
     return parser.parse_args()
 
 
 # Dataset helpers
 DATASET_NAME_MAP = {
     'msrvtt': 'MSRVTT', 'actnet': 'ACTNET',
-    'didemo': 'DIDEMO', 'lsmdc': 'LSMDC',
+    'didemo': 'DIDEMO', 'lsmdc': 'LSMDC', 'panda': 'PANDA',
 }
+
+# Panda pool-scaling caption/manifest inputs (repo-root relative).
+PANDA_TEST_JSON = 'data/panda/video_retreival_caption/panda_ret_test.json'
+PANDA_TRAIN_JSON = 'data/panda/video_retreival_caption/panda_ret_train.json'
 
 
 def resolve_dataset_cache_dir(cache_dir, dataset):
@@ -162,6 +178,12 @@ def load_test_queries(dataset):
                     if clip_id != LSMDC_BAD_CLIP_ID:
                         pairs.append((clip_id, parts[5]))
         return pairs
+    elif dataset == 'panda':
+        with open(PANDA_TEST_JSON) as f:
+            data = json.load(f)
+        # Strip "test/" prefix + .mp4 so ids match the sID keys / feature cache base ids.
+        return [(item['video'].replace('.mp4', '').split('/')[-1], item['caption'])
+                for item in data]
 
 
 def load_query_manifest(path):
@@ -197,6 +219,10 @@ def load_train_video_ids(dataset):
                     if cid != LSMDC_BAD_CLIP_ID:
                         clip_ids.append(cid)
         return clip_ids
+    elif dataset == 'panda':
+        with open(PANDA_TRAIN_JSON) as f:
+            data = json.load(f)
+        return [item['video'].replace('.mp4', '').split('/')[-1] for item in data]
 
 
 # Feature loading
@@ -224,6 +250,84 @@ def load_video_embeddings(video_ids, cache_dir, dataset):
     if missing > 0:
         print(f"Warning: {missing}/{len(video_ids)} videos missing from cache")
     return np.array(embs, dtype=np.float32), valid
+
+
+def load_panda_video_embeddings(pool_video_ids, test_id_set, cache_dir):
+    """Mean-pool cached Panda XPool features; test ids live under PANDA/test, distractors under PANDA/train."""
+    base = resolve_dataset_cache_dir(cache_dir, 'panda')
+    embs, valid, missing = [], [], 0
+    for vid in tqdm(pool_video_ids, desc="Loading panda video features"):
+        sub = 'test' if vid in test_id_set else 'train'
+        npz_path = os.path.join(base, sub, f"{vid}.npz")
+        if not os.path.exists(npz_path):
+            missing += 1
+            continue
+        with np.load(npz_path) as data:
+            embs.append(pooled_video_vector(data['frame_embeds']))
+        valid.append(vid)
+    if missing > 0:
+        print(f"Warning: {missing}/{len(pool_video_ids)} panda videos missing from cache")
+    return np.array(embs, dtype=np.float32), valid
+
+
+def _l2_normalize_row(vec):
+    vec = np.asarray(vec, dtype=np.float32)
+    norm = np.linalg.norm(vec)
+    return vec / norm if norm > 1e-8 else vec
+
+
+def load_internvideo2_video_embeddings(pool_video_ids, features_root, dataset, setting):
+    """Look up pre-extracted, L2-normalized InternVideo2 pooled video embeddings by base id."""
+    ds_dir = os.path.join(features_root, 'InternVideo2', dataset)
+    store = {}
+    with open(os.path.join(ds_dir, 'video_embeddings_test.pkl'), 'rb') as f:
+        store.update(pickle.load(f))
+    if setting == 2:
+        with open(os.path.join(ds_dir, 'video_embeddings_train.pkl'), 'rb') as f:
+            for k, v in pickle.load(f).items():
+                store.setdefault(k, v)
+    embs, valid = [], []
+    missing = 0
+    for vid in tqdm(pool_video_ids, desc=f"Loading {dataset} InternVideo2 video features"):
+        if vid in store:
+            embs.append(_l2_normalize_row(store[vid]))
+            valid.append(vid)
+        else:
+            missing += 1
+    if missing > 0:
+        print(f"Warning: {missing}/{len(pool_video_ids)} videos missing from InternVideo2 features")
+    return np.array(embs, dtype=np.float32), valid
+
+
+def load_internvideo2_query_embeddings(gt_base_vids, features_root, dataset):
+    """Look up pre-extracted, L2-normalized InternVideo2 query text embeddings (key=<base>_0)."""
+    ds_dir = os.path.join(features_root, 'InternVideo2', dataset)
+    with open(os.path.join(ds_dir, 'text_embeddings_test.pkl'), 'rb') as f:
+        text_store = pickle.load(f)
+    dim = len(next(iter(text_store.values())))
+    embs, missing = [], 0
+    for base in gt_base_vids:
+        key = f"{base}_0"
+        if key in text_store:
+            embs.append(_l2_normalize_row(text_store[key]))
+        else:
+            embs.append(np.zeros(dim, dtype=np.float32))
+            missing += 1
+    if missing > 0:
+        print(f"Warning: {missing}/{len(gt_base_vids)} query text embeddings missing from InternVideo2")
+    return np.array(embs, dtype=np.float32)
+
+
+class InMemoryVideoStore:
+    """Row-id -> pre-pooled (normalized) InternVideo2 vector, matching QueryVideoStore's interface."""
+    def __init__(self, embeddings):
+        self.embeddings = embeddings
+        self.video_load_s = 0.0
+        self.video_pool_s = 0.0
+        self.disk_reads = 0
+
+    def get(self, row_id):
+        return self.embeddings[int(row_id)]
 
 
 def encode_text_queries_batched(captions, model, tokenizer, device, batch_size=64):
@@ -592,7 +696,8 @@ def compute_metrics(ranks):
     }
 
 
-def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k):
+def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k,
+                   vector_store=None):
     """Throughput path: query embeddings are ready; search one query at a time."""
     query_embs = normalize(query_embs)
     n = len(query_embs)
@@ -602,7 +707,9 @@ def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k)
     # Warm-cache by default: build the vector store ONCE so cross-query reuse
     # makes Pass-A effectiveness sweeps fast. Latency contract is owned by the
     # separate --per_query_timing path (search_per_query), which resets per query.
-    vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
+    # internvideo2 backbone passes a pre-loaded in-memory store instead.
+    if vector_store is None:
+        vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
     for i in tqdm(range(n), desc="Searching queries"):
         t0 = time.perf_counter()
         rows, scores, _ = search_manual(
@@ -762,11 +869,14 @@ def save_candidate_json(retrieved, distances, valid_captions, valid_gt_vids,
     recall_at_k = gt_in / len(results) if results else 0
     avg_candidates_per_query = (
         sum(r['num_candidates'] for r in results) / len(results) if results else 0)
+    backbone = getattr(args, 'feature_backbone', 'xpool_clip')
+    backbone_tag = '' if backbone == 'xpool_clip' else f'_{backbone}'
     metadata = {
-        'method': f'ann_{idx_type}',
+        'method': f'ann_{idx_type}{backbone_tag}',
         'dataset': args.dataset,
         'setting': args.setting,
         'index_type': idx_type,
+        'feature_backbone': backbone,
         'num_candidates': num_candidates,
         'pool_size': len(pool_ids),
         'per_query_timing': per_query_timings is not None,
@@ -850,6 +960,12 @@ def main():
         args.num_candidates = ANN_BASELINE_NUM_CANDIDATES[(args.dataset, args.setting)]
         print(f"Using ANN baseline K = {args.num_candidates} for ({args.dataset}, t{args.setting})")
 
+    if args.feature_backbone == 'internvideo2' and (
+            args.per_query_timing or args.subset_manifest or args.query_manifest):
+        raise ValueError("internvideo2 backbone is effectiveness-only (Pass-A); "
+                         "per-query timing / subset / query manifests need a live text "
+                         "encoder, which is not available for InternVideo2 in this repo.")
+
     print(f"\n{'='*70}")
     print(f"ANN Dense Retrieval Baseline")
     print(f"Dataset: {args.dataset}, Setting: {args.setting}, Index: {args.index_type}, K={args.num_candidates}")
@@ -899,7 +1015,20 @@ def main():
     print(f"Test queries: {len(test_pairs)}, Unique base test videos: {len(unique_test_base)}")
 
     # 2. Build pool (test first, then train extras for setting 2).
-    if args.setting == 2:
+    if args.distractor_manifest:
+        # Panda pool-scaling: pool = test bases + manifest first-d distractors (train/ stripped).
+        with open(args.distractor_manifest) as f:
+            manifest = json.load(f)
+        distractor_bases = [vid.split('/')[-1] for vid in manifest['video_ids']]
+        test_base_set = set(unique_test_base)
+        pool_video_ids = list(unique_test_base)
+        for b in distractor_bases:
+            if b not in test_base_set:
+                pool_video_ids.append(b)
+        print(f"Panda pool: {len(unique_test_base)} test + "
+              f"{len(pool_video_ids) - len(unique_test_base)} distractors = "
+              f"{len(pool_video_ids)} total (manifest {args.distractor_manifest})")
+    elif args.setting == 2:
         train_video_ids = load_train_video_ids(args.dataset)
         train_base_unique = dedup_by_base(train_video_ids)
         test_base_set = set(unique_test_base)
@@ -916,8 +1045,15 @@ def main():
 
     # 3. Load video embeddings (cache files keyed by base id).
     t0 = time.perf_counter()
-    video_embs, valid_pool_ids = load_video_embeddings(
-        pool_video_ids, args.cache_dir, args.dataset)
+    if args.dataset == 'panda':
+        video_embs, valid_pool_ids = load_panda_video_embeddings(
+            pool_video_ids, set(unique_test_base), args.cache_dir)
+    elif args.feature_backbone == 'internvideo2':
+        video_embs, valid_pool_ids = load_internvideo2_video_embeddings(
+            pool_video_ids, args.features_root, args.dataset, args.setting)
+    else:
+        video_embs, valid_pool_ids = load_video_embeddings(
+            pool_video_ids, args.cache_dir, args.dataset)
     video_embedding_load_time_s = time.perf_counter() - t0
     print(f"Loaded {len(valid_pool_ids)} video embeddings, dim={video_embs.shape[1]}")
     print(f"Video embeddings loaded in {video_embedding_load_time_s:.2f}s")
@@ -936,24 +1072,34 @@ def main():
     gt_in_pool = int(np.sum(gt_indices >= 0))
     print(f"Queries with GT in pool: {gt_in_pool}/{len(test_pairs)}")
 
-    # 5. Load CLIP weights from XPool checkpoint.
-    print(f"\nLoading X-Pool checkpoint: {args.checkpoint}")
-    checkpoint = torch.load(args.checkpoint, map_location='cpu')
-    state_dict = checkpoint['state_dict']
-    clip_state_dict = {k[5:]: v for k, v in state_dict.items() if k.startswith('clip.')}
-    clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-    clip_model.load_state_dict(clip_state_dict, strict=False)
-    clip_model = clip_model.to(device).eval()
-    tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+    # 5. Build query embeddings.
+    if args.feature_backbone == 'internvideo2':
+        # Pre-extracted InternVideo2 text embeddings, keyed by GT base id (one caption/video).
+        clip_model = tokenizer = None
+        query_embs = load_internvideo2_query_embeddings(
+            gt_vids, args.features_root, args.dataset)
+        print(f"Loaded {len(query_embs)} InternVideo2 query text embeddings, dim={query_embs.shape[1]}")
+    else:
+        # Load CLIP weights from XPool checkpoint.
+        print(f"\nLoading X-Pool checkpoint: {args.checkpoint}")
+        checkpoint = torch.load(args.checkpoint, map_location='cpu')
+        state_dict = checkpoint['state_dict']
+        clip_state_dict = {k[5:]: v for k, v in state_dict.items() if k.startswith('clip.')}
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+        clip_model.load_state_dict(clip_state_dict, strict=False)
+        clip_model = clip_model.to(device).eval()
+        tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 
-    # Throughput-mode pre-encoding (only when not in per-query timing mode).
-    if not args.per_query_timing:
-        query_embs = encode_text_queries_batched(
-            test_captions, clip_model, tokenizer, device, args.batch_size)
-        print(f"Encoded {len(test_captions)} text queries, dim={query_embs.shape[1]}")
+        # Throughput-mode pre-encoding (only when not in per-query timing mode).
+        if not args.per_query_timing:
+            query_embs = encode_text_queries_batched(
+                test_captions, clip_model, tokenizer, device, args.batch_size)
+            print(f"Encoded {len(test_captions)} text queries, dim={query_embs.shape[1]}")
 
     # 6. Build indices and evaluate.
-    search_k = max(100, args.num_candidates)
+    # search_k = K (not max(100,K)): the HNSW ef_search floor is max(search_k, ef), so a
+    # 100-floor pinned effort at ef=100 for every K<100 and flattened the latency-recall sweep.
+    search_k = args.num_candidates
     index_types = list(SUPPORTED_INDEX_TYPES) if args.index_type == 'all' else [args.index_type]
     all_results = {}
     index_artifacts = {}
@@ -996,8 +1142,14 @@ def main():
             t0 = time.perf_counter()
             structure = load_saved_structure(index_path, idx_type)
             structure_load_time_s = time.perf_counter() - t0
+            # Panda uses an in-memory store (features pre-loaded) because cached npz
+            # live under test/ vs train/ subdirs that the disk-reload store can't resolve.
+            vstore = (InMemoryVideoStore(video_embs)
+                      if args.feature_backbone == 'internvideo2' or args.dataset == 'panda'
+                      else None)
             metrics, retrieved, distances, per_query_timings = search_batched(
-                query_embs, structure, saved_pool_ids, idx_type, args, gt_indices, search_k)
+                query_embs, structure, saved_pool_ids, idx_type, args, gt_indices, search_k,
+                vector_store=vstore)
             metrics['index_load_time_s'] = float(structure_load_time_s)
             metrics['structure_load_time_s'] = float(structure_load_time_s)
 
@@ -1026,7 +1178,9 @@ def main():
         if args.output_json and args.index_type != 'all':
             cand_path = args.output_json
         else:
-            cand_filename = (f"{args.dataset}_ann_{idx_type}"
+            backbone_tag = ('' if args.feature_backbone == 'xpool_clip'
+                            else f"_{args.feature_backbone}")
+            cand_filename = (f"{args.dataset}_ann_{idx_type}{backbone_tag}"
                              f"_{args.num_candidates}_candidates"
                              f"_t{args.setting}.json")
             cand_path = os.path.join(args.candidate_dir, cand_filename)
@@ -1038,6 +1192,8 @@ def main():
     # 7. Save run summary.
     os.makedirs(args.output_dir, exist_ok=True)
     suffix = '_pqt' if args.per_query_timing else ''
+    if args.feature_backbone != 'xpool_clip':
+        suffix += f'_{args.feature_backbone}'
     result_file = os.path.join(
         args.output_dir,
         f"{args.dataset}_setting{args.setting}{suffix}_results.json")
