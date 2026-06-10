@@ -30,6 +30,15 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 - X-Pool remains the downstream final-rank evaluator; optimize Stage 1 to raise compact reachability while keeping candidate pools bounded. X-Pool gains driven by larger average candidate count or `OverflowHit` are diagnostic only, not compact Stage-1 improvements.
 - Preserve the Stage-1 storage contribution: the main GRDR index must not require a per-video dense or continuous embedding side table. Default compact methods should prefer semantic-ID-native signals such as beam score, route multiplicity, bucket size, prefix stats, margins, or codebook priors.
 
+## Storage Accounting SSOT (adopted 2026-06-09)
+
+The single source of truth for all GRDR/baseline per-video storage numbers — across every package, figure, and the paper — is `scripts/panda_figure/storage_accounting_ssot.md`. Do not invent a different storage convention; cite this file.
+
+- **Convention:** per-video index footprint, accounted **symmetrically**. Exclude on *every* method the corpus-independent query/tokenizer models (GRDR's T5 generator ↔ ANN's fine-tuned text encoder; GRDR's RQ-VAE codebooks ↔ ANN's video encoder) and any rebuildable search structure (GRDR's prefix trie ↔ ANN's IVF/HNSW graph). Count only the per-video payload, the query-time dictionary (PQ codebook; GRDR has none), and the int64 video id.
+- **GRDR formula:** `S(N) = N·(V·L·b_code + b_id) = N·(4·3·2 + 8) = 32·N` bytes (26·N if 12-bit packed). Verified constants: `V=4` latent-token sIDs/video (every video registered under all 4 routes — `trainer/evaluator.py:587-592`), `L=3` codes/sID, `b_code=2 B` int16 (K=4096), `b_id=8 B`.
+- **ANN formula:** IVF-PQ/OPQ `S(N)=N·(m+8)+codebook`; anchors `N·(dim·4+8)`.
+- **Do NOT** count a fixed decoder offset (the old ~275 MB `D_decoder` is excluded), and **do NOT** size GRDR from the single-view MM-SemanticTVR json (6 B/vid) — that is a 4× undercount; the deployed index is multi-view (24 B of codes/video).
+
 ## MSR-VTT Setting 2 Rules
 
 - Current compact budget gate: `avg_candidates_per_query <= 310`. Any Setting 2 row above this gate is excluded from compact-champion selection unless the user explicitly labels it as a diagnostic or large-pool ablation.
@@ -37,190 +46,87 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 - A valid Setting 2 champion must beat the current compact reference under the same budget gate, improve downstream X-Pool rerank or reduce candidate-pool size without rerank regression, and pass multi-seed validation. Do not promote a single-seed tie or a `+0.1` `CanHit@100` change.
 - Required Setting 2 readout: `avg/p95/max candidates`, `CanHit@20/50/100`, `FullSetHit@All`, `OverflowHit`, `route_miss`, `MeanLogDiscount`, top-100-truncated X-Pool, full-candidate X-Pool, and whether any X-Pool gain is caused by larger pool size.
 
-## Trustworthy Auto-Research Pipeline (attached 2026-06-05)
+# Trustworthy Research Pipeline
 
-This repo is managed by the Trustworthy Auto-Research Pipeline toolbox (the `/research-*` skills, symlinked into `~/.claude/skills/` from the toolbox repo). Its five operating protocols — Research Workflow (`WORKFLOW.md`), Research Output Contract, Fact Propagation, Learnings Update, and Refinement Guardrails — are already detailed in the sections below and remain authoritative. The toolbox adds one governance layer on top of them:
+This file is the agent operating context for any project that adopts the Trustworthy Research Pipeline. It is intentionally project-agnostic. A consuming project copies this file into its repo root and **prepends** project-specific sections (project name, motivation, optimization objective, contribution spine, current best, dataset / budget gates) above the protocols below. The protocols themselves are universal — do not edit them per project.
 
-- **Scope SSOT** (`outputs/_scope/transitions.jsonl`) — the versioned, user-owned intent store: Project → Direction → Task. The agent only *proposes* nodes; the user *ratifies*. Nothing enters Scope without explicit acceptance.
-- **Triage** (`outputs/_scope/triage.jsonl`) — the pending/disposed proposal queue. A Direction or Task becomes durable only after its Triage proposal is accepted and committed into the Scope SSOT; a package is materialized only from committed Scope, never from a pending proposal.
-- **`/research-auto` front door** — the post-init orchestrator. It runs an A–G admission check (dashboard → Project → Direction → Task → package → readiness → loop), advances one legal step per call, and runs the mechanical Scope/Triage commands only after the user ratifies.
-- **Autonomy dial** — `supervised` / `checkpoints` / `async` / `autonomous` (new Tasks default to `autonomous`). It controls pause frequency only and never weakens a correctness gate; a Project/Direction scope change auto-reverts affected Tasks to `supervised`.
-- **Context Pack** — deterministic, read-only project memory: human face `research_html/context.html`, durable core `research_html/data/context-core.js` (agent face `context_pack.md`). It never lands a rule by itself.
-- **Self-evolution memory** (`outputs/_selfevolve/`) — a governed Rule Store (live: `observed → candidate → validating → provisional → active`) plus a gated-off Skill Store. Only `active` rules enter the Context Pack; `/research-reflect` proposes, `/research-apply` lands with user approval.
+## What this pipeline produces
 
-Path convention: package runtime state stays under GRDR's existing `var/research/<pkg>/` and packages under `research_html/packages/<id>/`; only the Scope and self-evolution stores live under `outputs/_scope/` and `outputs/_selfevolve/`. `research-op` is the single mutation surface for package surfaces.
+A trustworthy research record where every claim is gated by an explicit metric, every metric is backed by a verified artifact, every direction has one declared next route, and every adopted win or archived failure leaves a structured `methodsTried` trace the next session can learn from. The skills bundled with this repo install the HTML surfaces, Scope/Triage gates, orchestration, and mutation tooling that enforce this. `WORKFLOW.md` is the seven-step controller the agent follows inside any package.
 
-## Research Workflow
+`research_html/` is the shared context surface, not the authority by itself. For research-affecting tasks,
+load the narrow owning layer: `outputs/_scope/transitions.jsonl` for intent, package pages for
+plan/tracker/result witnesses, `outputs/<pkg>/` plus live process state for measurements, and
+`research_html/data/research-packages.js` for dashboard index state. Derived pages such as `scope.html`,
+`context.html`, `learnings.html`, lane pages, and `scope-projection.json/js` are read-only context unless
+their owning skill says otherwise.
 
-`WORKFLOW.md` at the repo root is the operating protocol for any `@WORKFLOW.md` invocation and overrides general harness defaults (e.g., "do not spawn agents unless asked", end-of-turn-summary style). Strictly follow it: when it says dispatch a subagent, dispatch; when it says emit a 10-minute status line, emit it; when it says schedule re-entry, schedule.
+## The five protocols the agent obeys
 
-Before proposing or extending any new research idea, run a self-review first.
-- Check the problem anchor and the exact bottleneck being solved
-- Critically review the idea for weak assumptions, overclaimed conclusions, and likely reviewer attacks
-- Run a novelty check before turning the idea into an experiment or paper claim
-- For Review Loop workflows, do not save the loop transcript or full round-by-round review as a standalone doc. Distill only the actionable conclusions into `plan.html`, and record the important review judgments, concerns, and resolutions in `tracker.html`.
-- For future experiments, do not include an A0/checkpoint reproduction run such as `V0: A0 reproduction` by default. Assume the current checkpoint and recorded performance in `AGENTS.md` are correct unless the user explicitly asks to revalidate the anchor or there is direct evidence of code/path drift.
-- For inference/export changes, minimize per-query latency while preserving metric correctness. Reuse online generation outputs and offline caches where possible; do not add per-candidate T5 teacher-forcing or direct video-ANN search to the default inference path unless explicitly approved as an offline diagnostic.
-- In research plans, call the ordered run/ablation section `Experiments List`, not `Decision Tree`.
-- Do not pre-estimate run duration. `plan.html` rows, launcher manifests, allocation rows, and live-check rows record `est_time=unknown` until the run has executed at least 30 minutes of stable throughput; after that, derive ETA from observed throughput and update on every 10-minute report.
-- When a request spans multiple cells (e.g., Setting 1 + Setting 2, P1.a + P1.b, multi-dataset zero-shot transfer, beam-width sweeps), run every cell in scope before reporting back. State the full cell list at session start, update `results.html` and the canonical CSV incrementally as each cell finalizes, and list any skipped cells with explicit reason at close.
+The protocols form a stack — each one constrains the layers above it.
 
-## Change Isolation Rule (check FIRST for any GRDR-related change)
+### 1. Research Workflow (`WORKFLOW.md` at the repo root)
 
-Any edit that can move GRDR training or evaluation numbers MUST happen in an isolated git worktree, not in the main checkout. This is a hard precondition — check it before opening an editor on a GRDR file, and before dispatching any agent to implement a GRDR change.
+The seven-step controller for any package: how to load context, when to dispatch a sub-agent, what to emit on the 10-minute live cycle, when to schedule re-entry, when to stop. `WORKFLOW.md` is the operating protocol for any `@WORKFLOW.md` invocation; it overrides general harness defaults (do not spawn agents unless asked, end-of-turn summary style, etc.) inside a research session.
 
-- **In scope (worktree required):** any file under `models/`, `trainer/`, `data/` sampling/routing logic, `run.py` training schedule, loss/regularizer formulations, semantic-ID generation/export code, X-Pool reranker code that the published "Current Best" results depend on, hyperparameter defaults that ship as new behavior, and any dataset/config change that alters what the model sees during training or evaluation. Rule of thumb: if a training or evaluation run with the change could produce different numbers from a run without it, it is in scope.
-- **Out of scope (main checkout is fine):** `research_html/` (dashboard, package pages, docs), top-level markdown docs, launcher comments / log strings, memory files, README and similar tracked-but-non-runtime artifacts.
-- **Workflow:** create the worktree via the `superpowers:using-git-worktrees` skill (native worktree or `git worktree add .worktrees/<slug> -b <branch>`). Implement the change in the worktree. Verify effectiveness against the relevant Current-Best anchor (see `## Current Best` below) under the compact-budget gate and downstream X-Pool rerank as the ultimate witness — per `## Global Optimization Objective`. Only merge the worktree branch back after the verification passes; failed worktrees are torn down per `## Refinement Guardrails` ("remove all worktrees created for that direction").
-- **Refusal:** if the user asks for a quick in-place GRDR edit on the main checkout, stop and surface this rule before editing.
+Strictly follow `WORKFLOW.md`: when it says dispatch a sub-agent, dispatch; when it says emit a 10-minute status line, emit it; when it says schedule re-entry, schedule.
 
-## Code Alignment Rule (check FIRST for any experiment on Bunya or Nectar)
+### 2. Research Output Contract
 
-Before launching any experiment on a remote compute environment (Bunya, Nectar), verify that the remote checkout's code state matches the local workstation's code state. Drift between sites silently invalidates results — an experiment that runs on Bunya from a stale SHA is wasted compute and a misleading data point that can take days to detect.
+Research packages live under `research_html/packages/<YYYY-MM-DD>-<slug>/` and are created or materially
+restructured through `/research-package`, never by ad-hoc folders. Materialization reads only committed
+Scope state, not pending Triage proposals. Runtime logs, metrics, event manifests, checkpoints, and
+temporary artifacts go under `outputs/<YYYY-MM-DD>-<slug>/`.
 
-- **In scope:** any wall-clock training run, evaluation run, semantic-ID generation pass, candidate export, captioning pipeline, or any other GPU/CPU job whose output is consumed as evidence. Includes both new launches and resumes/continuations of prior runs. Applies symmetrically to all sites — workstation, Bunya, Nectar — even if only two of the three are involved in a given experiment.
-- **Out of scope:** light orchestration on a remote login node (mkdir, ls, sha256, file-transfer staging) that does not execute project code.
-- **Verification protocol (run before each remote launch):**
-  1. `git rev-parse HEAD` on local AND on the remote checkout (Bunya: `/scratch/user/uqzzha35/Project/<project>`; Nectar: the project mirror used by the run). The two SHAs must match.
-  2. `git status --porcelain` on both sides. Both must be clean, OR the local working-tree diff must be explicitly synced to the remote (via the `bunya-file-transfer` skill for Bunya; the documented Nectar transfer path for Nectar) and re-verified by file hash.
-  3. If a `.worktrees/<branch>` checkout is the runtime root per the Change Isolation Rule above, apply the protocol to the worktree path, not to the main checkout. The worktree's SHA is the witness.
-- **On mismatch:** do NOT launch. Either fast-forward the lagging side (`git fetch && git checkout <sha>`), push the missing commits, or sync the working-tree diff. Re-verify after the sync. Only then launch.
-- **Record the verified SHA** in the run's tracker live-card / launcher manifest / launch sentinel so post-hoc analysis can confirm which code produced the numbers. Untracked SHA = the run is not citable as evidence.
+Current package canon: packages use `index.html`, `plan.html`, `tracker.html`, `results.html`,
+`docs/index.html`, and `_agent/context.html`, with optional `implementation.html`, `analysis.html`,
+conversion-only `brainstorm.html`, and package-local `scripts/`. `tracker.html` owns execution state and
+`tracker.html#chosen-route`; standalone `launch.html`, `live.html`, and `next-action.html` are retired.
+For detailed field ownership, load `skills/research-package/references/package-contract.md` only when a
+package task needs it.
 
-## Refinement Guardrails
+### 3. Fact Propagation Contract
 
-For `/research-refine`, `/experiment-plan`, and `/research-refine-pipeline`, treat the current GRDR paper story as a compatibility constraint unless the user explicitly asks to replace it.
-- Every refinement must explain why the design sharpens the current paper narrative, not just why it is novel in isolation.
-- The paper's non-negotiable contribution spine is:
-  1. Multi-view video encoder. In code this is the stage-1 `VideoRQVAE_V2` plus `VideoLatentEncoder_V2` path (`models/video_rqvae/videorqvae.py`, `models/video_rqvae/encoder.py`), which decomposes one pooled video feature into `num_latent_tokens` partial views. Caption-side routing depends on `token_idx` in `data/video_dataset.py`, and evaluation can use all latent views through MaxSim / `return_all=True` in `trainer/evaluator.py`.
-  2. Progressive end-to-end co-training. In code this is the loop-wise training schedule in `run.py` and `trainer/trainer.py`: code length grows one layer at a time, checkpoints and semantic IDs are warm-started across loops, older codebooks are selectively frozen, and code drift is monitored to preserve prior layers.
-  3. Contrastive stage plus main training stage. The training story must keep the pre-train contrastive-alignment stage and the main stage that combines CE, code prediction, reconstruction, and RQ losses. Do not collapse this into an unstructured single-stage recipe unless the user explicitly wants that redesign.
-- Any refinement must remain compatible with:
-  - stage-1 generative retrieval via hierarchical semantic IDs and constrained generation in `models/grdr.py` and `trainer/evaluator.py`
-  - stage-2 X-Pool reranking via candidate JSON export and the `candidate_file` flow in `reranker/xpool`
-  - multi-view token routing via `num_latent_tokens`, `token_idx`, and per-token code assignment
-  - progressive code stability across loops and previously learned layers
-- By default, push back on refinements that remove the multi-view decomposition, break the stage-1 to stage-2 handoff, discard progressive co-training, or weaken prior-layer code consistency without a strong reviewer-proof reason.
-- When writing a proposal or experiment plan, explicitly state:
-  - which of the three core contributions is dominant in the paper story
-  - which modules stay unchanged
-  - which modules are extended
-  - how the contrastive stage, main stage, and X-Pool handoff remain valid
-- When a refinement direction is explicitly judged failed, remove all worktrees created for that direction after preserving any needed notes in the owning research package. Do not leave stale branch worktrees under `.worktrees/` or elsewhere once the direction is abandoned.
+Every artifact that lands during a research run (checkpoint, candidate JSON, sentinel, phase marker, chain-done) is a "locked fact" that the agent must propagate to every owning surface — `results.html`, `tracker.html#chosen-route`, registry status fields, tracker Resume Block — in the same turn the artifact is observed.
 
-## Research Output Contract
+The mechanical check is `/research-op scan-events` (shipped with the `research-op` skill at `skills/research-op/scripts/research_op.py`):
 
-- The only valid in-repo location for a new research package is `research_html/packages/<YYYY-MM-DD>-<slug>/`. Use the `/research-package` skill to scaffold; do not create ad-hoc top-level research folders.
-- Every package owns one decision per page: `index.html`, `plan.html`, `tracker.html`, `results.html`, `next-action.html`, plus `docs/`, `scripts/`, and `_agent/`.
-- Package-owned scripts (launchers, eval drivers, sentinel writers, one-off ablations) live under `research_html/packages/<id>/scripts/`. Stable shared entrypoints stay in repo-root `scripts/`.
-- Runtime state, supervisor JSON, local logs, candidate JSONs, and temporary CSVs must go under `var/research/<YYYY-MM-DD>-<slug>/`, not in tracked repo roots.
-- Legacy `research/active/` and `research/archive/` directories are retained for pre-2026-05-11 packages only; do not add new content there.
+```bash
+# every per-turn live cycle
+python skills/research-op/scripts/research_op.py --pkg <pkg-id> --op scan-events   # list newly-locked facts as JSON event lines
+# … agent invokes --event <name> --payload <json> per event for atomic fan-out …
+# The cursor advances on the next successful --event invocation (no separate --bump step).
+```
 
-## Brainstorm → Package Promotion Recipe
+The cursor lives at `<runtime-root>/manifests/.propagation_cursor` (epoch float). An empty report = nothing to propagate. A non-empty report at the Stop Gate is a workflow violation.
 
-Three-phase lifecycle for a new idea: **explore → refine → promote**. Exploration is cheap and ungated; promotion is the gated commit that turns the idea into a trustworthy, runnable in-progress package. This is orchestration over the existing skills (`/research-package` scaffolds, `/research-op` mutates rows/fields) — not a new skill. Promotion is always user-triggered. Phases 2–3 adopt the convergence discipline of the superpowers `brainstorming` skill — divergent approaches, section-gated approval, and a spec self-review — applied at the `PILOT_READY` gate (not during early exploration, which stays frictionless). `idea-creator` diverges across *ideas* upstream; this recipe converges *one* idea into an approved design.
+**Directive changes are locked facts too (`DIRECTIVE_CHANGE`).** A *user instruction that changes a package's constraints, plan, or scope* — "add a rule", "redesign experiment P1", "change the metric/baseline/roster" — is a locked fact on the same footing as an artifact event. It is not surfaced by `scan-events` (no artifact landed), so the agent must propagate it explicitly in the same turn: write the directive to its typed home (a binding rule → `/research-op insert --target package-invariant`; a plan/scope change → its owning surface), **and** update the tracker Resume Block `lastAction`/`workflow-state` **and** the registry `lastUpdated`. A directive that touches only one surface (e.g. a rule buried in a doc while the tracker and registry read unchanged) is a propagation violation — `learnings_lint.py lint-status` flags it as `directive-not-propagated`.
 
-### Container model (hybrid)
+### 4. Learnings Update Protocol
 
-While exploring and refining, a brainstorm lives as **two coupled artifacts**, not a full package:
-1. **Content** — a doc-style HTML at `research_html/brainstorm/<YYYY-MM-DD>-<slug>.html`, following the doc-template + style guide (Rule 0 applies). This holds the substance.
-2. **Dashboard handle** — one thin row in `research_html/data/research-packages.js` with `category: "brainstorm"`, `status: "EXPLORING"`, and `detailPath: "brainstorm/<slug>.html"` so the lane card opens the doc directly. No `packages/<id>/` directory exists yet. (`relativeDetailPath()` already reads a free-form `detailPath` per row, so no renderer change is needed.)
+The cross-package learnings index at `research_html/learnings.html` is a derived view over `research_html/data/research-packages.js`. The data file is the canonical store; `learnings.html` re-renders on page load. This protocol fixes *when* to write to the data file and *how* to keep it trustworthy.
 
-The thin row carries only brainstorm-legal fields: required `direction` + `contributionSpineFlag` (an id from `RESEARCH_CONTRIBUTION_SPINE` in `schema.js`); metric/gate fields (`activeGate`, `primaryMetricVsGate`, `methodsTried`, `openRuns`) are schema-forbidden for this category. Keep `name`, `problem`, `objective`, `motivation`, `lastUpdated` populated so the card renders.
-
-### Phase 1 — explore
-
-- Discuss the brief idea with the user; write the doc.
-- Insert the thin lane row (status `EXPLORING`).
-- Run `python research_html/scripts/learnings_lint.py lint-status`; fix any missing required field.
-
-### Phase 2 — refine
-
-Refine converges the idea to an approved design. Iterate the doc freely, but the `EXPLORING → PILOT_READY` bump is gated on three checks (adapted from the superpowers `brainstorming` skill):
-
-- **Gate A — approaches considered (divergence).** The doc must carry a section with **≥2 candidate designs**, their trade-offs, and the chosen one *with reasoning* — not just a single `direction`. This forces converging on the best design rather than the first one imagined.
-- **Gate B — section-gated approval (convergence).** Present the design one section at a time — *modules changed → train/eval data flow → metric & budget gate → risks* — and get user approval after each before advancing. Drive elicitation with `AskUserQuestion` multiple-choice batches (one decision per question), not a prose dump.
-- **Gate C — spec self-review.** Run the research self-review under `## Research Workflow` (problem anchor, weak assumptions, reviewer attacks, novelty), *plus* the four superpowers checks: placeholder scan (no `TBD`/`TODO` left), internal consistency (sections don't contradict), scope check (one package or decompose), ambiguity check (metric/gate definitions admit one reading). Fix inline.
-
-Only when all three pass — and the idea has a falsifiable hypothesis and a no-change boundary — bump the row `EXPLORING → PILOT_READY` (adds required `hypothesis` + `noChangeBoundary`) via `/research-op`. `PILOT_READY → PROMOTED` is a **hard gate**: do not scaffold a package until the user has explicitly approved the design, not merely until the hypothesis/no-change fields exist.
-
-### Phase 3 — promote (user-triggered only)
-
-A single atomic procedure; do not stop partway:
-1. **Elicit** the in-progress trustworthiness fields the doc has not already settled, via `AskUserQuestion` multiple-choice batches (one decision per question — the CC-native form of the superpowers one-question-at-a-time rule), not a prose dump. Cover: hypothesis; primary metric + `metric-formula`/`metric-dataset`/`metric-protocol`/`metric-dedup`/`metric-cutoff`; baseline + `baseline-checkpoint`/`baseline-protocol`/`baseline-last-verified`; budget gate (Setting 2: `avg_candidates_per_query <= 310`); no-change boundary; seed plan; the `experiments[]` pipeline (`P\d+` rows that paint the timeline); `nextRoute`. Carry over `direction`→problem/objective, `hypothesis`, `noChangeBoundary`, `contributionSpineFlag`.
-2. **Scaffold** `packages/<YYYY-MM-DD>-<slug>/` via `/research-package` as `category: in-progress`, `status: CONTEXT_LOADED`, `--scope all`, filling the elicited fields.
-3. **Migrate the doc**: copy `research_html/brainstorm/<slug>.html` → `packages/<new-id>/docs/<slug>.html` (now the canonical, dashboard-wired copy). Freeze the original brainstorm file as a backup — add a banner at the top linking to the package doc and never edit it again. (If a frozen duplicate is unwanted, move instead and rely on git history.)
-4. **Tear down the handle**: delete the thin brainstorm row from `research-packages.js`. Do not keep it as `PROMOTED` — the in-progress package is now the single home; provenance lives in the migrated doc + git history.
-5. **GRDR ready-to-run gates** (these, not lint, define "runnable"): create the Change-Isolation worktree per `## Change Isolation Rule`; satisfy the `## Code Alignment Rule` SHA check before any remote launch; record the budget gate and name X-Pool downstream rerank as the ultimate witness. Advance toward `READY_TO_LAUNCH` only once these hold.
-6. **Lint**: run `python research_html/scripts/learnings_lint.py all` and fix every error before closing the turn.
-
-## Research Doc Style
-
-Any new HTML doc under `research_html/packages/<pkg-id>/docs/` MUST start from the shared template and follow the style guide. This keeps every doc dashboard-wired (status-strip + package-nav) and visually consistent.
-
-- **Rule 0 — analyze the topic before writing.** Open `research_html/templates/doc-style-guide.html` and work the three questions: (a) what is the hardest aspect of the topic to convey in prose? (b) what concrete entity grounds the abstraction (one named video, one query, one user)? (c) what invariant is hidden in the geometry (tensor shapes, codebook layout, route multiplicity)? Pick the visualization pattern that addresses (a). This is a hard precondition — drafting a doc without working Rule 0 is a workflow violation.
-- **Two-part standard:** (1) *text primitives* (`pre.diagram`, `pre.code`, `.callout`, `table.data-table`, `pill-mono`, `stage-title`) for narrative, code, glossary, structured data; (2) *visualization patterns* (side-by-side architecture, function-level flow SVG, state-cell grid, discrete-ID chip display, candidate-flow lanes, benefits-at-a-glance table) for content that prose alone obscures. The style guide documents all six visualization patterns with reusable CSS scaffolds + color/animation conventions.
-- **Visualization choice is topic-driven, not boilerplate.** Match the pattern to the topic. A 1-page perf-fix doc rarely needs more than one visualization; a multi-mechanism design doc justifies 3–5. Visualizations replace language where language fails — they are not decoration.
-- **Skeleton:** copy `research_html/templates/doc-template.html`. Replace the six template variables (`$package_id`, `$doc_title`, `$eyebrow`, `$lead`, `$last_updated`, `$root_prefix`), delete the demo `<section data-section="primitives">`, then write the doc's real sections. If the topic needs visualization, copy the relevant scaffold CSS (`.arch-grid`, `.cb-grid`, `.sid-chip`, `.cand-flow`, animation keyframes) from the top of `doc-style-guide.html` into the doc's page-local `<style>` block — only the patterns you actually use.
-- **Hard rules:** keep the shell verbatim (`data-status-strip`, `data-package-nav`, footer `<time data-field="last-updated">`, and the three trailing `<script>` tags). Page-local CSS is **permitted** for visualization scaffolds documented in the style guide; stay within the documented color palette (frozen blue, trained green, original red, proposed green, neutral cream, warm/cold/mixed for state). Animations must include `@media (prefers-reduced-motion: reduce)` fallback. Bump the footer date with a short scope phrase on every meaningful edit.
-- **Section composition is content-agnostic:** the template prescribes the shell + primitives, not section count, section order, or section topics. A perf-fix doc can be one card; a full pipeline walk-through can be 8–10 numbered steps. Lead with the visualization, then table, then prose — visual → reference → narrative.
-- **Reuse one concrete example across visualizations.** If the doc introduces `v_cook_42` in the arch diagram, also use it in the chip display, the candidate-flow lane, and the benefits framing. One mental model, threaded across patterns.
-- **Render-check before declaring done.** Run `google-chrome --headless --screenshot` on the doc and visually confirm SVG, tables, chips, and animations render correctly. Tag-balance lint alone is insufficient.
-- **The exemplars:**
-  - **Visual exemplar** (mandatory reread before designing a new doc): `research_html/packages/2026-05-25-multiview-workload-aware-sid-index/docs/hierarchical_sid_design.html` — the canonical use of all six visualization patterns (side-by-side architecture, function-level flow SVG with override-vs-fallback branches, codebook fragmentation cell grid, sID chip display, candidate-flow dedup lanes, benefits-at-a-glance).
-  - **Text exemplar**: `research_html/packages/2026-05-16-panda-pseudo-queries-multiview/docs/training_pipeline.html` — the reference for a fully-fleshed-out text-primitive-heavy doc.
-
-## Runtime Ops
-
-- Launch every long-running bash script, dataset download, preprocessing pipeline, and experiment inside `tmux`.
-- Prefer named `tmux` sessions/windows and report the attach command so the run can be monitored live.
-- Enforce the Fact Propagation Contract on every per-turn live cycle: between the tracker live-check update and the §5 status line, run `python research_html/packages/<pkg-id>/scripts/propagate_facts.py`; for each event listed in the report, update its owning surfaces (`results.html`, `next-action.html`, `research_html/data/research-packages.js`, tracker Resume Block) in the same turn, then advance the cursor with `propagate_facts.py --bump`. A non-empty report at the Stop Gate is a workflow violation.
-
-### Background job hygiene
-
-- Never spawn background processes with a trailing `&` from a `Bash run_in_background` call; the wrapper will self-detach and lose its status writer. Restructure the script to use an internal `sleep` loop instead.
-- Polling for job completion must match on actual file state (sentinel file existence, output size, `sacct` State, exit code) — never on the echoed command string in a log tail, which false-matches as soon as the launcher prints the command it is about to run.
-- `pgrep`-based liveness checks must require **N consecutive negatives** before declaring the process dead, to avoid the kill-then-relaunch race during fork.
-- For any parallel CPU workload (numpy / faiss / sklearn / multiprocessing), prefix the launch with `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`. Benchmark 1-worker vs N-worker on a small slice before scaling; if N-worker is not >1.5× faster, do not fan out.
-- Launch wrappers must not use `set -e` around the sentinel-write step — an upstream failure must still flush the return-code sentinel so polling sees a terminal state.
-
-### Bunya GPU allocation by phase
-
-- **Smoke tests → interactive `salloc`.** Smokes are short-scale probes: env verification, throughput gates, single-step sanity, small-N pilots, S0-SMOKE-style cells, sentinel reruns. If the target node has multiple idle GPUs, request all of them on one salloc (e.g. `--gres=gpu:h100:2`) and fan smokes across the GPUs in parallel via `CUDA_VISIBLE_DEVICES=0` / `=1`. Release the salloc with `exit` as soon as the smoke phase finishes — do not hold an interactive lease idle while staging the next phase.
-- **Full / long-running runs → `sbatch`.** Reserved for budgeted production cells: multi-loop GRDR training, multi-shard captioning, full-scale eval exceeding the interactive QoS time limit, and any cell whose result will be cited in a `results.html` row. Record the verified SHA in the sbatch script (per the Code Alignment Rule).
-- The one-salloc-per-node ban still applies: a second interactive salloc cannot land on a host that already holds one of yours; pass `--exclude=<busy-nodes>` derived from `squeue --me`.
-
-## Verification Discipline
-
-Lint passing is necessary but not sufficient to declare a task complete. Before reporting any artifact-producing task as done:
-
-- Enumerate the full scope up front. For multi-cell / multi-setting work (Setting 1 + Setting 2, dataset × beam × seed grids, P1.a + P1.b style sub-stages), list every cell that must complete and check each off explicitly. Do not stop after the first cell.
-- Render the artifact and verify visible state matches intent. For HTML packages: confirm `next-action.html` is closed, `tracker.html` agent-zone collapses are closed by default, no intended content is hidden inside an unexpanded `<details>` block, and every referenced file resolves.
-- For code changes affecting training/eval: run the narrowest available check (single-cell smoke, single-seed eval, lint) and confirm the change does not regress the existing behavior; if no automated check exists, state explicitly why prior behavior should remain unchanged.
-- Surgical changes only. If a second edit seems needed beyond the requested scope, surface it as a question — do not silently fold it in.
-
-## Learnings Update Protocol
-
-The dashboard's cross-package learnings index (`research_html/learnings.html`) is a derived view over `research_html/data/research-packages.js`. The data file is the canonical store; `learnings.html` re-renders on page load. This protocol fixes *when* to write to that data file and *how* to keep it trustworthy. It extends — does not replace — the Fact Propagation Contract above.
-
-### Core principles
+**Core principles**
 
 1. **Upstream surface is the witness, the data file is the index.** A `methodsTried[]` row is written to `research-packages.js` *only after* the corresponding row exists in the package's `results.html` with a stable section anchor, and the `evidencePath` resolves to a real file or anchor. Never invent a row from memory.
-2. **Drafts are auto-detected; writes are user-acked at terminal transitions.** In-progress facts (E1, E2 below) update without user ack because the source-of-truth surface already exists. Terminal facts (E3–E6) require T1 user ack.
-3. **Atomic per-turn closure.** Any turn that mutates a learnings-relevant field must, in the same turn, touch all of: upstream surface row → `research-packages.js` → tracker Resume Block `lastAction` → run `--lint-status`. A non-empty lint report is a Stop-Gate violation.
+2. **Drafts are auto-detected; writes are user-acked at terminal transitions.** In-progress facts (`VERDICT_FINALIZED`, `STATUS_CHANGED`) update without user ack because the source-of-truth surface already exists. Terminal facts (`TERMINAL_TRANSITION`, `ADOPTION`, `SUPERSESSION`, `REOPEN`) require T1 user ack.
+3. **Atomic per-turn closure.** Any turn that mutates a learnings-relevant field must, in the same turn, touch all of: upstream surface row → `research-packages.js` → tracker Resume Block `lastAction` → run `learnings_lint.py`. A non-empty lint report is a Stop-Gate violation.
 
-### Event trigger table
+**Event trigger table**
+
+Learnings event names (`LEARNINGS_EVENT` constant — SSOT: this file): `DIRECTIVE_CHANGE`, `VERDICT_FINALIZED`, `STATUS_CHANGED`, `TERMINAL_TRANSITION`, `ADOPTION`, `SUPERSESSION`, `REOPEN`.
 
 | Event | Trigger (where it originates) | User ack | Fields written in `research-packages.js` |
-|---|---|---|---|
-| **E1. Per-experiment verdict finalized** | `results.html` result-gate row gains `pass` / `fail` / `inconclusive` in `<td data-decision>` AND artifact verification recorded | none | Append one `methodsTried[]` row |
-| **E2. In-progress live update** | tracker live-check update, plan revision, blocker change | none | `status`, `activeGate`, `primaryMetricVsGate`, `currentBlocker`, `openRuns`, `lastAction`, `lastUpdated` |
-| **E3. Terminal status transition** | `next-action.html` chosen-route resolves to a terminal lane move (`archive_or_stop`, adoption) | **T1** | `category` (lane move), `status` (terminal value), `terminationMessage`; freeze `methodsTried[]` |
-| **E4. Adoption** | CLAUDE.md "Current Best" edit, code merge into `models/` / `trainer/`, or a new in-progress package starts citing the win | **T1** | `adoptionPath` (specific anchor or path) |
-| **E5. Supersession** | A newer success package replaces an older one | **T1** | On the *old* package: `status = SUPERSEDED`, `supersededBy = <new id>` |
-| **E6. Reopen marked** | User explicitly states a fail package should be revisitable under a named condition | **T1** | `status = ARCHIVED_REOPENABLE`, `reopenTrigger = "<condition>"` |
+| --- | --- | --- | --- |
+| **`DIRECTIVE_CHANGE`** | A user instruction changes the package's constraints / plan / scope (add a binding rule, redesign an experiment, change metric / baseline / roster) — not an artifact event, so `scan-events` will not surface it | none | Write the directive to its typed home (`bindingRules[]` via `--target package-invariant`, or the owning surface) + `lastAction`, `lastUpdated` |
+| **`VERDICT_FINALIZED`** | `results.html` result-gate row gains `PASS` / `FAIL` / `INCONCLUSIVE` / `DIAGNOSTIC` AND artifact verification recorded | none | Append one `methodsTried[]` row |
+| **`STATUS_CHANGED`** | tracker live-check, plan revision, blocker change | none | `status`, `activeGate`, `primaryMetricVsGate`, `currentBlocker`, `openRuns`, `lastAction`, `lastUpdated` |
+| **`TERMINAL_TRANSITION`** | `tracker.html#chosen-route` resolves to a terminal lane move (`TERMINATE`, adoption) | **T1** | `category` (lane move), `status` (terminal value), `terminationMessage`; freeze `methodsTried[]` |
+| **`ADOPTION`** | `CLAUDE.md` "Current Best" edit, code merge into `models/` / `trainer/`, or a new in-progress package starts citing the win | **T1** | `adoptionPath` (specific anchor or path) |
+| **`SUPERSESSION`** | A newer success package replaces an older one | **T1** | On the *old* package: `status = WIN_SUPERSEDED`, `supersededBy = <new id>` |
+| **`REOPEN`** | User explicitly states a fail package should be revisitable under a named condition | **T1** | `status = ARCHIVED_CONDITIONAL`, `reopenTrigger = "<condition>"` |
 
-### `methodsTried` row contract
+**`methodsTried` row contract**
 
 Every row is exactly six fields, drawn verbatim from the witnessing `results.html` row:
 
@@ -228,66 +134,98 @@ Every row is exactly six fields, drawn verbatim from the witnessing `results.htm
 { method, hypothesis, gate, measured, verdict, evidencePath }
 ```
 
-- `verdict` ∈ `{pass, fail, inconclusive}`. Diagnostic-only rows are `inconclusive`, not `pass`.
-- `evidencePath` must resolve. Either a file under `var/research/...` / `output/...`, or an HTML anchor like `packages/<id>/results.html#<exp-anchor>`. If the anchor doesn't exist yet, write the row only after creating it.
-- N upstream result-gate rows may collapse to 1 `methodsTried` row when they share a method (e.g., a 9-cell sweep summarized as one entry that links to the cell-level data). Prefer aggregation; do not let `methodsTried[]` mirror the full result-gate table.
-- Single-seed `pass` is `inconclusive` until the gate's seed requirement is met.
+- `verdict` ∈ `{PASS, FAIL, INCONCLUSIVE, DIAGNOSTIC}`. Diagnostic-only rows use `DIAGNOSTIC` (not `INCONCLUSIVE`). Single-seed or ambiguous results use `INCONCLUSIVE`.
+- `evidencePath` must resolve. Either a file under `outputs/...` / `output/...`, or an HTML anchor like `packages/<id>/results.html#<exp-anchor>`. If the anchor doesn't exist yet, write the row only after creating it.
+- N upstream result-gate rows may collapse to 1 `methodsTried` row when they share a method (e.g., a 9-cell sweep summarized as one entry that links to the cell-level data). Prefer aggregation.
+- Single-seed `PASS` is `INCONCLUSIVE` until the gate's seed requirement is met. Runs producing only diagnostic evidence (no hypothesis test) use `DIAGNOSTIC`.
 
-### The dashboard-wide tool: `research_html/scripts/learnings_lint.py`
-
-Single Python entry point that enforces this protocol across all packages. Reads `data/schema.js` + `data/research-packages.js` via the bundled `dump_packages.js` (node) helper. Subcommands:
+**The dashboard-wide tool: `research_html/scripts/learnings_lint.py`**
 
 | Command | What it does |
-|---|---|
-| `lint-status` | Schema lint per package: `(category, status)` legal; `_all` + status-specific required fields present; `forbidden` fields absent; `methodsTried` rows have the six fields and a legal verdict; cross-references (`supersededBy`, `promotedTo`) resolve; on-disk `packages/<id>/` ⇄ registry entries match. |
-| `lint-evidence` | Every `methodsTried[].evidencePath` and `lastDecisionEvidencePath` resolves. File-missing is a warning; anchor-missing is an error (a typo or stale claim). |
-| `scan-events [--pkg <id>]` | Runs the three draft writers: **E1** scans `results.html` `data-table="result-gate"` for finalized verdicts not yet in `methodsTried`; **E3** scans `next-action.html` `<div data-field="route">` for terminal-route language and proposes a `(category, status, terminationMessage)` block; **E4** scans `CLAUDE.md` for newly-cited package ids and proposes `adoptionPath`. Prints JSON drafts; does not write. |
-| `draft-method <pkg-id> <anchor>` | Print one JSON `methodsTried` row drafted from `results.html#<anchor>`. If the anchor does not yet exist on the row, the draft says so — add the anchor first. |
-| `draft-terminal <pkg-id>` | Print the JSON terminal block drafted from `next-action.html#chosen-route`. |
-| `all [--pkg <id>]` | `lint-status` + `lint-evidence` + `scan-events`. Exit non-zero if any error was found. |
+| --- | --- |
+| `lint-status` | Schema lint per package: `(category, status)` legal; required fields present; forbidden fields absent; `methodsTried` rows have the six fields and a legal verdict; cross-references (`supersededBy`, `promotedTo`) resolve; on-disk `packages/<id>/` ⇄ registry entries match. |
+| `lint-evidence` | Every `methodsTried[].evidencePath` and `lastDecisionEvidencePath` resolves. File-missing is a warning; anchor-missing is an error. |
+| `scan-events [--pkg <id>]` | Runs the three draft writers (`VERDICT_FINALIZED` / `TERMINAL_TRANSITION` / `ADOPTION`). Prints JSON drafts; does not write. |
+| `draft-method <pkg-id> <anchor>` | Print one JSON `methodsTried` row drafted from `results.html#<anchor>`. |
+| `draft-terminal <pkg-id>` | Print the JSON terminal block drafted from `tracker.html#chosen-route` (legacy packages may fall back to `next-action.html#chosen-route`). |
+| `all [--pkg <id>]` | All three lints + scan. Exit non-zero if any error was found. |
 
-Add `--strict` to make warnings count toward the exit code (used by CI).
+Add `--strict` to make warnings count toward the exit code (CI mode).
 
-### Stop-Gate sequence (the contract for every learnings-relevant turn)
+**Stop-Gate sequence (the contract for every learnings-relevant turn)**
 
-Atomic per-turn closure: when any event above fires, the same turn touches all four surfaces or none.
+1. Make the upstream-witness edit (`results.html` / `tracker.html#chosen-route` / `tracker.html`).
+2. Update `research_html/data/research-packages.js`.
+3. Update tracker Resume Block `lastAction`.
+4. Run `python research_html/scripts/learnings_lint.py all`. Fix every error before closing the turn.
+5. If the turn includes a terminal status transition (`TERMINAL_TRANSITION` / `ADOPTION` / `SUPERSESSION` / `REOPEN`), confirm user ack is in hand.
 
-1. **Upstream witness** — make the edit on the source-of-truth surface (`results.html` row, `next-action.html` chosen-route, etc.) with a stable anchor.
-2. **`research_html/data/research-packages.js`** — append `methodsTried` (E1) or update top-level / terminal fields (E2–E6).
-3. **`research_html/packages/<id>/tracker.html`** — Resume Block `lastAction` = one-line description of the write (e.g., `"2026-05-12 added methodsTried[BARS_cap350] (verdict=fail)"`).
-4. **Lint** — run `python research_html/scripts/learnings_lint.py all`; fix every error before closing the turn. A non-empty report at the Stop Gate is a workflow violation.
-5. If the turn includes a terminal status transition (E3–E6), confirm user ack is in hand.
+### 5. Refinement Guardrails
 
-`learnings.html` is not in this list — it re-derives on load; do not edit it directly. The `scan-events` output should be reviewed every time `results.html` or `next-action.html` changes — it tells the agent *which* draft writes the current state implies.
+Treat the consuming project's contribution spine as a compatibility constraint unless the user explicitly asks to replace it. Every refinement must explain why the design sharpens the current research story, not just why it is novel in isolation.
 
-### Recovery: stale or wrong rows
+Each consuming project declares its **non-negotiable contribution spine** as cards in `RESEARCH_PROJECT_PROFILE` in `research_html/data/research-packages.js` (or as a numbered list in the project's own CLAUDE.md). By default, push back on refinements that:
 
-- **Wrong verdict** (later evidence contradicts): edit the row in place; update `measured` and `verdict`; add a follow-up `methodsTried` row only if the new evidence comes from a *different* method or a re-run with new code. Do not append a "correction" row to the same method.
-- **Stale evidencePath** (anchor removed or file moved): fix the upstream witness first (re-add the anchor in `results.html` or move the file), then update the row.
-- **Mistaken adoption**: if `adoptionPath` was set but never landed in CLAUDE.md / code, clear it; if status is `ADOPTED`, downgrade to `ADOPTED_PENDING_ACK` with a `lastAction` note.
+- Remove a spine component without a strong reviewer-proof reason
+- Break the Stage-1 → Stage-2 handoff (if the project has one)
+- Discard a co-training or progressive-training schedule
+- Weaken prior-state code/data consistency
 
-### What this protocol does NOT cover
+When a refinement direction is explicitly judged failed, remove all worktrees created for that direction after preserving any needed notes in the owning research package.
 
-- `learnings.html` rendering (purely derived; edit `assets/research.js` if the view itself needs to change).
-- Per-experiment status tracking inside `experiments[]` — that's the tracker's resource-allocation table, not `methodsTried`.
-- Brainstorm-direction notes — those live in `direction` and `contributionSpineFlag`, not in `methodsTried`.
+## The state model that ties protocols 2-4 together
 
-## graphify
+`research_html/data/schema.js` declares the `(category, status)` state machine and the required-field rules each cell must satisfy. The card renderer and `learnings_lint.py` both import from it.
 
-A knowledge graph of this codebase lives in `graphify-out/`. It is rebuilt automatically when code changes.
+**Naming convention:** Package *category* (lane) values are lowercase-kebab (`in-progress`, `success`, `fail`) — they are URL/CSS/attribute facets. Package *status* values are SCREAMING_SNAKE — they are state-machine positions. Never recase the lane values; never use lowercase for status values.
 
-### Before answering codebase questions
-1. Check if `graphify-out/graph.json` exists
-2. If it does, load the graph and query it before reading raw files — it is faster and shows cross-file connections
-3. Use `/graphify query "<question>"` for broad questions, `/graphify explain "<concept>"` for single-node deep dives
-
-### After making code changes
-If you modified `.py` files, rebuild the graph:
 ```
-python -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"
+category=in-progress → status ∈ { CONTEXT_LOADED, IMPLEMENTING, IMPLEMENTATION_REVIEW,
+                                  DECISION_ADJUDICATION, READY_TO_LAUNCH, EXPERIMENT_RUNNING,
+                                  LIVE_ANALYSIS, RESULT_ANALYSIS, NEXT_ACTION_READY,
+                                  BLOCKED, STOPPED }
+category=success     → status ∈ { ADOPTED_UNCONFIRMED, ADOPTED, WIN_SUPERSEDED }
+category=fail        → status ∈ { ARCHIVED, ARCHIVED_CONDITIONAL }
 ```
-This only re-extracts changed files (AST-only for code, no LLM cost).
 
-### Key graph facts (durable)
-- The GRDR trainer intentionally reuses X-Pool's `BaseTrainer` and `CandidateDataLoader`.
-- `Config` is the main cross-community bridge (links datasets, evaluator, trainer, inference sim, CLIP transformer); expect it to appear as a god-node hub when querying the graph.
+`STOPPED` is a terminal-within-lane state: it requires `terminationMessage` and is exempt from the `activeGate`/`primaryMetricVsGate`/`nextRoute` trio. `DECISION_ADJUDICATION` is a transient active state that keeps the full trio.
+
+Brainstorm is **not** a package category. Pre-package, pre-SSOT ideas live on the dashboard brainstorm
+lane (`research_html/data/brainstorms.js`); they become a package only at conversion (`/research-brainstorm`
+→ a ratified Direction → `create_from_scope`), which freezes the source idea(s) into the package's
+`brainstorm.html` provenance sub-page.
+
+Field requirements key off `(category, status)`:
+
+- `category=in-progress` (except `STOPPED`): requires `activeGate`, `primaryMetricVsGate`, `nextRoute`.
+- `category=in-progress`, `status=STOPPED`: requires `terminationMessage`; exempt from the trio above.
+- `category=success`: requires `terminationMessage`, `methodsTried`, `adoptionPath`.
+- `category=fail`: requires `terminationMessage`, `methodsTried`; `reopenTrigger` iff `status=ARCHIVED_CONDITIONAL`.
+
+Terminal transitions (any status change that crosses a lane boundary) require user ack per Trust rule T1.
+
+## Cross-cutting agent rules
+
+- **Build context first.** Read the invocation, project profile, Scope SSOT, package state, active plan,
+  results, docs, and runtime evidence required by the task before work.
+- **Use the source-routing model.** Load the SSOT or package witness that owns the decision; use derived
+  `research_html` pages for in-context learning, not as mutation targets or final proof.
+- **Runtime truth wins.** Validate live runs, logs, outputs, summaries, and artifact roots before changing state. Recalled content is unverified (T3).
+- **Consult Learnings before new directions.** Open `research_html/learnings.html` before proposing a new direction, refinement, or experiment idea, and before converting a brainstorm idea into a package.
+- **Surgical changes.** Touch only what the task requires. Match existing style. Do not refactor adjacent code.
+- **No A0 reproduction by default.** Trust the recorded checkpoint and `AGENTS.md` / `CLAUDE.md` unless the user explicitly asks to revalidate the anchor.
+- **All long-running work goes in `tmux`.** Named sessions/windows so the run can be monitored live; report the attach command.
+- **ETA discipline.** Do not pre-estimate run duration. Plan rows, launcher manifests, allocation rows, and live-check rows record `est_time=unknown` until the run has executed at least 30 minutes of stable throughput; after that, derive ETA from observed throughput and update on every 10-minute report.
+
+## Per-project customization
+
+A consuming project's CLAUDE.md should prepend (above this file's content) sections for:
+
+- **Project** — one-paragraph description (system, datasets, agent stack).
+- **Motivation and Goal** — the central bottleneck the project attacks.
+- **Global Optimization Objective** — the primary objective and the success rule (e.g., "metric X must improve under budget Y").
+- **Project-specific rules** — non-negotiable dataset / budget / evaluation constraints.
+- **Refinement Guardrails — Contribution Spine** — the project's non-negotiable spine components (mirrored into `RESEARCH_PROJECT_PROFILE.cards`).
+- **Current Best** — the live anchor record (checkpoint path, metric values, validation seeds).
+
+These project-specific sections are written by the user. The five protocols above stay verbatim.

@@ -2,27 +2,32 @@
 """Measure index storage vs corpus size N over the panda corpora to 2M (Fig 2).
 
 Supersedes reranker/xpool/utils/storage_sim.py (which extrapolated from random
-features). Every point here is a MEASURED byte count:
+features). GRDR follows the project Storage Accounting SSOT; the baselines are
+measured byte counts:
 
-  - GRDR T+M+D : D = serving decoder ckpt (fixed offset); M = the real per-video
-                 sID payload serialized from the panda sID index; T = the prefix
-                 trie over the sliced sID set (real node count x bytes/node).
+  - GRDR        : per-video index footprint per the Storage Accounting SSOT
+                 (scripts/panda_figure/storage_accounting_ssot.md): V*L sID codes +
+                 int64 video id = 32 B/vid. The T5 decoder, RQ-VAE codebooks, and the
+                 prefix trie are EXCLUDED (query-side / offline / rebuildable; they
+                 cancel against ANN's encoder / structure — see the SSOT).
   - frame dense (X-Pool)   : measured per-video .npz bytes x N.
   - video dense (CLIP4Clip): measured per-video .npz bytes x N.
-  - ANN HNSW / IVF         : raw vectors (N x dim x 4B) + the measured graph/list
-                             structure from the panda setting-2 npz, scaled by N.
+  - ANN IVF-Flat / HNSW    : raw vectors (N x dim x 4B) + int64 id, per the Storage
+                             Accounting SSOT; the IVF lists / HNSW graph are EXCLUDED
+                             (rebuildable at load, symmetric with GRDR's excluded trie),
+                             so both anchors are 2048 + 8 = 2056 B/video.
 
 Writes a long CSV (method, N, component, bytes) so the notebook renders directly.
 """
 import argparse
-import json
 import os
 from collections import defaultdict
 
 import numpy as np
 
+from storage_ssot import GRDR_V, GRDR_L, GRDR_B_CODE, GRDR_B_ID, ANN_B_ID, grdr_bytes_per_video
+
 REPO = "/home/uqzzha35/Project/SemanticID/GRDR"
-MM = "/home/uqzzha35/Project/SemanticID/MM-SemanticTVR"
 
 # Measured panda corpus grid (test=5694; +d distractors).
 PANDA_TEST = 5694
@@ -31,11 +36,10 @@ NS = [PANDA_TEST + d for d in DISTRACTORS]
 
 DIM = 512  # InternVideo2 / CLIP video embedding dim.
 
-# --- measured artifact paths --------------------------------------------------
-GRDR_SID_INDEX = f"{MM}/data/panda/none/text_guided_c4096_l3/panda_index_internvideo2_emb_train.json"
-GRDR_DECODER_CKPT = f"{REPO}/output/checkpoints/GRDR/panda/champion_multiview_n4_c4096l3_2150k_s42/model-3-fit/best_model.pt"
-HNSW_NPZ = f"{REPO}/output/evaluation_results/ann_baseline/indexes/panda_hnsw_setting2.npz"
-IVF_NPZ = f"{REPO}/output/evaluation_results/ann_baseline/indexes/panda_ivf_setting2.npz"
+# GRDR per-video footprint = V*L sID codes + int64 id (constants from storage_ssot.py,
+# the single importable SSOT; see storage_accounting_ssot.md).
+
+# --- measured baseline artifact paths -----------------------------------------
 # Per-video dense feature cache anchors (measured on disk).
 FRAME_CACHE = f"{REPO}/reranker/xpool/video_features_cache/Xpool-Panda"  # 28 GB / 2.15M
 VIDEO_CACHE = f"{REPO}/reranker/xpool/video_features_cache/CLIP4clip"
@@ -55,93 +59,34 @@ def measured_per_video_bytes(cache_dir, n_sample=400):
     return float(np.mean(sizes)) if sizes else 0.0
 
 
-def grdr_sid_bytes_per_video(sid_index, n_sample=50_000):
-    """Real serialized bytes/video for the sID payload M (npz int16, NLT codes)."""
-    keys = list(sid_index.keys())[:n_sample]
-    # Each video carries L codes (e.g. A_x,B_y,C_z). Store as int16 codebook ids.
-    codes = []
-    for k in keys:
-        codes.append([int(c.split("_")[1]) for c in sid_index[k]])
-    arr = np.asarray(codes, dtype=np.int16)
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".npz", delete=True) as tf:
-        np.savez(tf.name, sid=arr)
-        total = os.path.getsize(tf.name)
-    return total / len(keys)
-
-
-def trie_bytes(sid_index, video_ids):
-    """Measured prefix-trie node count over the sliced sID set x bytes/node."""
-    BYTES_PER_NODE = 12  # one child ptr (8B) + token id (4B), conservative.
-    nodes = set()
-    for vid in video_ids:
-        bare = vid.split("/", 1)[1] if "/" in vid else vid
-        codes = sid_index.get(bare)
-        if not codes:
-            continue
-        prefix = ()
-        for c in codes:
-            prefix = prefix + (c,)
-            nodes.add(prefix)
-    return len(nodes) * BYTES_PER_NODE
-
-
-def npz_array_bytes(path):
-    d = np.load(path, allow_pickle=True)
-    return sum(d[k].nbytes for k in d.files)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=f"{REPO}/output/evaluation_results/figures/summaries/storage_data.csv")
-    ap.add_argument("--full", action="store_true", help="exact trie over the full sliced set (slow at 2M)")
     args = ap.parse_args()
 
-    print("Loading panda sID index (2.15M videos)...")
-    sid_index = json.load(open(GRDR_SID_INDEX))
-    sid_keys = list(sid_index.keys())
-
-    # --- fixed / per-unit measured quantities ---
-    D_bytes = os.path.getsize(GRDR_DECODER_CKPT)               # fixed offset
-    m_per_video = grdr_sid_bytes_per_video(sid_index)          # M slope
+    # --- per-unit measured quantities (baselines) ---
     frame_pv = measured_per_video_bytes(FRAME_CACHE)           # frame dense slope
     video_pv = measured_per_video_bytes(VIDEO_CACHE)           # video dense slope
-    # ANN: raw vectors (N x dim x 4) + structure, anchored at the 2M npz.
-    hnsw_struct_2m = npz_array_bytes(HNSW_NPZ)                 # graph at pool 2005694
-    ivf_struct_2m = npz_array_bytes(IVF_NPZ)                  # lists+centroids at 2005694
-    n_2m = 2_005_694
-    hnsw_struct_pv = hnsw_struct_2m / n_2m
-    ivf_struct_pv = ivf_struct_2m / n_2m
     vec_pv = DIM * 4                                           # raw f32 vector / video
+    grdr_pv = grdr_bytes_per_video()                          # SSOT 32 B/video
+    anchor_pv = vec_pv + ANN_B_ID                             # SSOT anchor: vector + int64 id (structure excluded)
 
-    print(f"  D (decoder, fixed) : {D_bytes/1e6:.1f} MB")
-    print(f"  M sID bytes/video  : {m_per_video:.2f} B")
+    print(f"  GRDR bytes/video   : {grdr_pv} B  (SSOT: {GRDR_V}*{GRDR_L}*{GRDR_B_CODE} codes + {GRDR_B_ID} id)")
     print(f"  frame dense/video  : {frame_pv/1024:.2f} KB")
     print(f"  video dense/video  : {video_pv/1024:.2f} KB")
-    print(f"  HNSW struct/video  : {hnsw_struct_pv:.1f} B  (+{vec_pv} B vectors)")
-    print(f"  IVF  struct/video  : {ivf_struct_pv:.1f} B  (+{vec_pv} B vectors)")
+    print(f"  ANN anchor/video   : {anchor_pv} B  (SSOT: {vec_pv} B vector + {ANN_B_ID} B id; IVF/HNSW structure excluded as rebuildable)")
 
     rows = []  # (method, N, component, bytes)
     for N in NS:
-        # GRDR T+M+D: trie measured on the sliced set (exact only with --full).
-        if args.full:
-            vids = sid_keys[:N]  # nested prefix slice (test+first-d distractors)
-            T = trie_bytes(sid_index, vids)
-        else:
-            # trie scales ~ with #unique codes; estimate from a 100k sample slope.
-            sample_vids = sid_keys[: min(N, 100_000)]
-            T_sample = trie_bytes(sid_index, sample_vids)
-            T = T_sample * (N / len(sample_vids))
-        M = m_per_video * N
-        rows.append(("GRDR", N, "D_decoder", D_bytes))
-        rows.append(("GRDR", N, "M_sid", M))
-        rows.append(("GRDR", N, "T_trie", T))
+        # GRDR per-video index footprint (Storage Accounting SSOT): V*L codes + int64 id.
+        rows.append(("GRDR", N, "sid_payload", GRDR_V * GRDR_L * GRDR_B_CODE * N))
+        rows.append(("GRDR", N, "video_id", GRDR_B_ID * N))
         rows.append(("frame_dense", N, "features", frame_pv * N))
         rows.append(("video_dense", N, "features", video_pv * N))
         rows.append(("hnsw", N, "vectors", vec_pv * N))
-        rows.append(("hnsw", N, "structure", hnsw_struct_pv * N))
+        rows.append(("hnsw", N, "video_id", ANN_B_ID * N))
         rows.append(("ivf", N, "vectors", vec_pv * N))
-        rows.append(("ivf", N, "structure", ivf_struct_pv * N))
+        rows.append(("ivf", N, "video_id", ANN_B_ID * N))
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
