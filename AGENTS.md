@@ -170,6 +170,9 @@ For package work, Codex is the decision owner described by `WORKFLOW.md`:
   before claiming the turn is complete.
 - Put long-running experiments, training, preprocessing, downloads, and remote jobs in named `tmux`
   sessions unless the user explicitly asks for a different runner.
+- For long-running experiment commands, use the project live-run skill (`research-exp-live`) when
+  available: launch through its wrapper and read routine run state from structured runtime artifacts
+  (`status.json`), not raw scrollback; raw logs are bounded debug fallback.
 
 Do not declare a win from chat memory. Claims need metric gates, evidence paths, and the package/result
 surface required by `CLAUDE.md` and `WORKFLOW.md`.

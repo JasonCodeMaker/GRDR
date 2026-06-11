@@ -82,6 +82,8 @@ Current package canon: packages use `index.html`, `plan.html`, `tracker.html`, `
 `docs/index.html`, and `_agent/context.html`, with optional `implementation.html`, `analysis.html`,
 conversion-only `brainstorm.html`, and package-local `scripts/`. `tracker.html` owns execution state and
 `tracker.html#chosen-route`; standalone `launch.html`, `live.html`, and `next-action.html` are retired.
+Typed `experiments[]` rows are the task spine; `learnings_lint.py alignment` verifies their result,
+implementation, docs, and tracker thread before launch or lane moves.
 For detailed field ownership, load `skills/research-package/references/package-contract.md` only when a
 package task needs it.
 
@@ -148,6 +150,7 @@ Every row is exactly six fields, drawn verbatim from the witnessing `results.htm
 | `scan-events [--pkg <id>]` | Runs the three draft writers (`VERDICT_FINALIZED` / `TERMINAL_TRANSITION` / `ADOPTION`). Prints JSON drafts; does not write. |
 | `draft-method <pkg-id> <anchor>` | Print one JSON `methodsTried` row drafted from `results.html#<anchor>`. |
 | `draft-terminal <pkg-id>` | Print the JSON terminal block drafted from `tracker.html#chosen-route` (legacy packages may fall back to `next-action.html#chosen-route`). |
+| `alignment [--pkg <id>] [--terminal]` | Structural task-spine lint: typed `experiments[]` rows have the required result, implementation, docs, and tracker blocks; reverse orphan rows/cards and status contradictions are reported. |
 | `all [--pkg <id>]` | All three lints + scan. Exit non-zero if any error was found. |
 
 Add `--strict` to make warnings count toward the exit code (CI mode).
@@ -211,6 +214,7 @@ Terminal transitions (any status change that crosses a lane boundary) require us
 - **Use the source-routing model.** Load the SSOT or package witness that owns the decision; use derived
   `research_html` pages for in-context learning, not as mutation targets or final proof.
 - **Runtime truth wins.** Validate live runs, logs, outputs, summaries, and artifact roots before changing state. Recalled content is unverified (T3).
+- **Use live-run artifacts.** For long-running experiment commands, use the project live-run skill when available. Routine live state comes from structured runtime artifacts, not ad hoc raw scrollback parsing; raw logs are bounded debug fallback.
 - **Consult Learnings before new directions.** Open `research_html/learnings.html` before proposing a new direction, refinement, or experiment idea, and before converting a brainstorm idea into a package.
 - **Surgical changes.** Touch only what the task requires. Match existing style. Do not refactor adjacent code.
 - **No A0 reproduction by default.** Trust the recorded checkpoint and `AGENTS.md` / `CLAUDE.md` unless the user explicitly asks to revalidate the anchor.
