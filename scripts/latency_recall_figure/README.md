@@ -1,14 +1,16 @@
 # Latency–Recall Evaluation
 
-Two-stage (recall → rerank) latency + effectiveness evaluation for GRDR and the
-baselines. The pipeline ends at the aggregated CSV **and** its rendered figures:
+Latency + effectiveness evaluation for GRDR and the baselines. Generative methods
+remain recall → X-Pool rerank pipelines; ANN baselines are full ANN retrieval
+pipelines with no X-Pool rerank. The pipeline ends at the aggregated CSV **and**
+its rendered figures:
 
 ```
 output/evaluation_results/figures/summaries/figure_data.csv      <- the data
 output/evaluation_results/figures/figures/<ds>_panel_AB.png      <- the figures
 ```
 
-~120 rows = 7 methods × 4 datasets × Setting 2 × per-method operating points. The
+~150 rows = 9 methods × 4 datasets × Setting 2 × per-method operating points. The
 `render` phase draws one Panel A/B PNG per dataset from the CSV (the `figure_data.json`
 sibling is also written by `aggregate`).
 
@@ -126,8 +128,8 @@ Set these inline before the command. Full list + defaults live in [`_env.sh`](_e
 
 | Var                | Default                                    | Meaning                                              |
 | ------------------ | ------------------------------------------ | ---------------------------------------------------- |
-| `BASELINES`        | `grdr_ref tiger avg t2vindexer eercf hnsw ivf` | Which methods to run (space-separated)           |
-| `DATASETS`         | `MSRVTT ACTNET DIDEMO LSMDC`               | Which datasets                                       |
+| `BASELINES`        | `grdr_ref tiger avg t2vindexer eercf hnsw ivf ivfpq opq` | Which methods to run (space-separated)           |
+| `DATASETS`         | `MSRVTT ACTNET DIDEMO PANDA`               | Which datasets                                       |
 | `SETTINGS`         | `2`                                        | Eval setting (this study is Setting 2)               |
 | `OPERATING_POINTS` | *(empty → per-method default below)*       | Override the operating-point sweep                   |
 | `DEVICE`           | `0`                                        | GPU id                                               |
@@ -150,16 +152,18 @@ When `OPERATING_POINTS` is empty, each method sweeps its own knob:
 | `tiger`,`avg` | 20 50 100 200    | candidate budget              | generative baselines                             |
 | `t2vindexer`  | 20 50 100 200    | candidate budget              | indist: real candidates → **X-Pool reranked** (like tiger/avg); zeroshot: OOM placeholder |
 | `eercf`       | 1 10 25 50       | rerank top-k                  | native sim-matrix; **no X-Pool rerank stage**    |
-| `hnsw`        | 20 40 100 200    | budget `K` + paired `ef_search` | ANN; `ef_search = K` via `ANN_HNSW_EF_BY_K` (20/40/100/200)          |
-| `ivf`         | 20 40 100 200    | budget `K` + paired `nprobe`    | ANN; `nprobe` paired to `K` via `ANN_IVF_NPROBE_BY_K` (4/8/16/32)    |
+| `hnsw`        | 20 40 100 200    | budget `K` + paired `ef_search` | full ANN retrieval; `ef_search = K` via `ANN_HNSW_EF_BY_K` (20/40/100/200) |
+| `ivf`         | 20 40 100 200    | budget `K` + paired `nprobe`    | full ANN retrieval; `nprobe` paired to `K` via `ANN_IVF_NPROBE_BY_K` (4/8/16/32) |
+| `ivfpq`       | 20 40 100 200    | budget `K` + paired `nprobe`    | full ANN retrieval; IVF-PQ with `pq_m=16`, `pq_nbits=8` |
+| `opq`         | 20 40 100 200    | budget `K` + paired `nprobe`    | full ANN retrieval; OPQ + IVF-PQ with `pq_m=16`, `pq_nbits=8` |
 
 Method quirks worth knowing:
 - **ANN operating point pairs the candidate budget `K` with the search-effort knob.**
-  Each `K` maps to an `ef_search` (HNSW) / `nprobe` (IVF) value via `ANN_HNSW_EF_BY_K` /
-  `ANN_IVF_NPROBE_BY_K` in `_env.sh`. HNSW uses `ef_search = K` (20/40/100/200); IVF uses
-  `nprobe` 4/8/16/32 at K=20/40/100/200. Search effort therefore grows with the budget, so
-  Stage-1 latency rises across the sweep instead of collapsing to a vertical line, while
-  `K` also sizes the Stage-2 candidate pool. Setting `ef_search = K` makes the faiss export
+  Each `K` maps to an `ef_search` (HNSW) / `nprobe` (IVF-family) value via `ANN_HNSW_EF_BY_K` /
+  `ANN_IVF_NPROBE_BY_K` in `_env.sh`. HNSW uses `ef_search = K` (20/40/100/200); IVF, IVF-PQ,
+  and OPQ use `nprobe` 4/8/16/32 at K=20/40/100/200. Search effort therefore grows with the
+  budget, so Stage-1 latency rises across the sweep instead of collapsing to a vertical line, while
+  `K` also sizes the returned ANN result set. Setting `ef_search = K` makes the faiss export
   path agree with the per-query latency path, which floors `ef_search` at `K`
   (`ef_search = max(k, ef)` in `eval_ann.py`). IVF `nprobe` is independent of `K` and
   applies as set.
@@ -168,9 +172,9 @@ Method quirks worth knowing:
   disk re-read + re-pool of each scored video (`video_load` ≫ `similarity`), not the
   index traversal. A deployed ANN would keep pooled vectors in RAM; treat these
   numbers as feature-I/O + search, not pure ANN compute.
-- **ANN latency** (`hnsw`/`ivf`) is measured inside `recall-stage` (step A.2), so
-  `recall-latency` deliberately skips them. ANN `rerank-latency` is skipped unless
-  `ALLOW_ANN_RERANK_LATENCY=1`.
+- **ANN effectiveness and latency** (`hnsw`/`ivf`/`ivfpq`/`opq`) are measured inside
+  `recall-stage`. ANN rows do not run X-Pool rerank: their R@1/5/10 are native FAISS-ranked
+  retrieval metrics, and `total_latency_ms == stage1_latency_ms`.
 - **`eercf`** has no X-Pool `rerank-stage` (it ranks with its own sim-matrix); empty
   `rerank_source_path` lint warnings for EERCF rows are expected.
 - **`t2vindexer`** is a Stage-1 generative retriever: in **indist** mode it produces real

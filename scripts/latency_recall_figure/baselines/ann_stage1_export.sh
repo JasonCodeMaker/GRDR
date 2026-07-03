@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# P4 Stage-1 candidate export for ANN baselines (HNSW + IVF) over Panda-X-Pool features.
+# P4 Stage-1 candidate export for ANN baselines over X-Pool features.
 #
 # Training-free baselines. For each (idx_type, dataset, setting):
 #   - load Xpool-Panda video feature cache (parent dir; eval_ann resolves <ds> subdir)
 #   - load CLIP text encoder weights from Panda-X-Pool ckpt
-#   - build FAISS index (HNSW efSearch=128 / IVF nprobe=32)
-#   - search top-100 -> candidate JSON
+#   - build FAISS index (HNSW / IVF / IVF-PQ / OPQ)
+#   - search top-K -> candidate JSON with native ANN R@K
 #
 # Overrides via env: DEVICE, INDICES, DATASETS, SETTINGS.
 set -u
@@ -20,11 +20,13 @@ MANIFESTS_DIR=${MANIFESTS_DIR:-${RUNTIME_ROOT}/manifests}
 DEVICE=${DEVICE:-0}
 PANDA_CKPT=${PANDA_CKPT:-${REPO_ROOT}/reranker/xpool/ckpt/panda_2150k_s42_model_best.pth}
 CACHE_PARENT=${CACHE_PARENT:-${REPO_ROOT}/reranker/xpool/video_features_cache/Xpool-Panda}
-INDICES=${INDICES:-"hnsw ivf"}
-DATASETS=${DATASETS:-"msrvtt actnet didemo lsmdc"}
+INDICES=${INDICES:-"hnsw ivf ivfpq opq"}
+DATASETS=${DATASETS:-"msrvtt actnet didemo panda"}
 SETTINGS=${SETTINGS:-"1 2"}
 HNSW_EF_SEARCH=${HNSW_EF_SEARCH:-128}
 IVF_NPROBE=${IVF_NPROBE:-32}
+PQ_M=${PQ_M:-16}
+PQ_NBITS=${PQ_NBITS:-8}
 # Candidate budget K (the ANN operating point). ef_search/nprobe are held fixed.
 NUM_CANDIDATES=${NUM_CANDIDATES:-100}
 
@@ -53,6 +55,7 @@ for idx_type in ${INDICES}; do
     case "${idx_type}" in
         hnsw) knob_flag="--hnsw_ef_search ${HNSW_EF_SEARCH}" ;;
         ivf)  knob_flag="--ivf_nprobe ${IVF_NPROBE}" ;;
+        ivfpq|opq) knob_flag="--ivf_nprobe ${IVF_NPROBE} --pq_m ${PQ_M} --pq_nbits ${PQ_NBITS}" ;;
         *) echo "ERROR: unknown index type ${idx_type}" | tee -a "${LOG}"; exit 2 ;;
     esac
     for ds in ${DATASETS}; do
@@ -102,6 +105,8 @@ MANIFEST="${MANIFESTS_DIR}/P4_ann_export.json"
     echo "  \"settings\": \"${SETTINGS}\","
     echo "  \"hnsw_ef_search\": ${HNSW_EF_SEARCH},"
     echo "  \"ivf_nprobe\": ${IVF_NPROBE},"
+    echo "  \"pq_m\": ${PQ_M},"
+    echo "  \"pq_nbits\": ${PQ_NBITS},"
     echo "  \"num_candidates\": ${NUM_CANDIDATES},"
     echo "  \"device\": ${DEVICE},"
     echo "  \"cells\": [\"${CELLS[*]}\"]"

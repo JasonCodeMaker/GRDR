@@ -11,16 +11,19 @@ from pathlib import Path
 from typing import Any
 
 
-METHODS = ["grdr_ref", "tiger", "avg", "t2vindexer", "eercf", "hnsw", "ivf"]
-DATASETS = ["MSRVTT", "ACTNET", "DIDEMO", "LSMDC"]
+METHODS = ["grdr_ref", "tiger", "avg", "t2vindexer", "eercf", "hnsw", "ivf", "ivfpq", "opq"]
+ANN_METHODS = {"hnsw", "ivf", "ivfpq", "opq"}
+DATASETS = ["MSRVTT", "ACTNET", "DIDEMO", "PANDA"]
 DEFAULT_OPS = {
     "grdr_ref":   [20, 50, 100, 200, 300],
     "tiger":      [20, 50, 100, 200, 300],
     "avg":        [20, 50, 100, 200, 300],
     "t2vindexer": [20, 50, 100, 200, 300],
     "eercf":      [50],
-    "hnsw":       [20, 40, 100, 200, 300],
-    "ivf":        [20, 40, 100, 200, 300],
+    "hnsw":       [20, 40, 100, 200],
+    "ivf":        [20, 40, 100, 200],
+    "ivfpq":      [20, 40, 100, 200],
+    "opq":        [20, 40, 100, 200],
 }
 OP_KNOB = {
     "grdr_ref":   "beam",
@@ -30,6 +33,8 @@ OP_KNOB = {
     "eercf":      "rerantopk",
     "hnsw":       "budget",
     "ivf":        "budget",
+    "ivfpq":      "budget",
+    "opq":        "budget",
 }
 
 CSV_COLUMNS = [
@@ -53,6 +58,22 @@ def load_json(path: Path) -> dict[str, Any] | None:
             return json.load(f)
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def candidate_video_id(candidate: Any) -> Any:
+    """Return the video id from supported candidate encodings."""
+    if isinstance(candidate, dict):
+        for key in ("video_id", "video", "vid", "id"):
+            if key in candidate:
+                return candidate[key]
+        return None
+    if isinstance(candidate, (list, tuple)):
+        if len(candidate) >= 2:
+            return candidate[1]
+        if len(candidate) == 1:
+            return candidate[0]
+        return None
+    return candidate
 
 
 # EERCF Stage-1 latency is the unoptimized full-pipeline retrieval cost; it is not
@@ -80,12 +101,37 @@ def recompute_r1(cand_json: dict[str, Any]) -> float | None:
     hit, total = 0, 0
     for row in results:
         gt = row.get("ground_truth_video_id")
-        cand_list = row.get("candidates") or []
+        cand_list = [candidate_video_id(c) for c in (row.get("candidates") or [])]
         top1 = next(iter(dict.fromkeys(cand_list)), None)  # first unique candidate
         total += 1
         if top1 is not None and top1 == gt:
             hit += 1
     return 100.0 * hit / total if total else None
+
+
+def recompute_native_retrieval_r(cand_json: dict[str, Any], ks: list[int]) -> dict[str, float | None]:
+    """Native retrieval R@K from candidate order, without any downstream rerank.
+
+    The denominator is every exported query row. Missing candidate lists or absent
+    labels count as misses. FAISS returns unique row ids in normal operation, so
+    this follows the returned order directly rather than applying a rerank score.
+    """
+    out: dict[str, float | None] = {f"R@{k}": None for k in ks}
+    results = cand_json.get("results")
+    if not results:
+        return out
+    counts = {k: 0 for k in ks}
+    total = 0
+    for row in results:
+        gt = row.get("ground_truth_video_id")
+        cand_list = [candidate_video_id(c) for c in (row.get("candidates") or [])]
+        total += 1
+        for k in ks:
+            if gt in cand_list[:k]:
+                counts[k] += 1
+    if total == 0:
+        return out
+    return {f"R@{k}": 100.0 * counts[k] / total for k in ks}
 
 
 def recompute_canhit(cand_json: dict[str, Any], ks: list[int]) -> dict[int, float] | None:
@@ -97,7 +143,7 @@ def recompute_canhit(cand_json: dict[str, Any], ks: list[int]) -> dict[int, floa
     total = 0
     for row in results:
         gt = row.get("ground_truth_video_id")
-        cand_list = row.get("candidates") or []
+        cand_list = [candidate_video_id(c) for c in (row.get("candidates") or [])]
         # Deduplicate preserving order.
         seen = set()
         dedup: list[Any] = []
@@ -211,12 +257,15 @@ def stage2_latency_ms(perq: dict[str, Any] | None) -> tuple[float | None, str]:
 
 
 def effectiveness_validity(cand_a: dict[str, Any] | None) -> str:
-    """Maps Pass-A candidate JSON to {full_test_set, OOM, missing, failed}."""
+    """Maps Pass-A candidate JSON to {full_test_set, OOM, unsupported, missing, failed}."""
     if not cand_a:
         return "missing"
     meta = cand_a.get("metadata") or {}
-    if str(meta.get("status", "")).upper() == "OOM":
+    status = str(meta.get("status", ""))
+    if status.upper() == "OOM":
         return "OOM"
+    if status.lower() == "unsupported":
+        return "unsupported"
     if cand_a.get("results"):
         return "full_test_set"
     return "failed"
@@ -245,6 +294,14 @@ def collect(runtime_root: Path, cand_grdr_root: Path, cand_base_root: Path, meth
                     if s1_ms is not None and s2_ms is not None:
                         total_ms = s1_ms + s2_ms
 
+                    if method in ANN_METHODS:
+                        # Full ANN retrieval: no X-Pool handoff. The final R@K is
+                        # the native FAISS-ranked output in cand_a, and total latency
+                        # is the online ANN retrieval latency.
+                        rerank = recompute_native_retrieval_r(cand_a, [1, 5, 10]) if cand_a else rerank
+                        s2_ms = None
+                        total_ms = s1_ms
+
                     if method == "eercf":
                         # Stage-1 = hardcoded full-pipeline retrieval; no separate
                         # X-Pool rerank, so total == stage1. The measured cand_b value
@@ -268,7 +325,10 @@ def collect(runtime_root: Path, cand_grdr_root: Path, cand_base_root: Path, meth
                     eff_validity = effectiveness_validity(cand_a)
 
                     s1_src = candidates_b_file(runtime_root, method, ds, setting, op)
-                    rerank_src = rerank_json if rerank_json.is_file() else rerank_csv
+                    if method in ANN_METHODS:
+                        rerank_src = candidates_a_file(cand_grdr_root, cand_base_root, method, ds, setting, op)
+                    else:
+                        rerank_src = rerank_json if rerank_json.is_file() else rerank_csv
 
                     row = {
                         "dataset": ds,

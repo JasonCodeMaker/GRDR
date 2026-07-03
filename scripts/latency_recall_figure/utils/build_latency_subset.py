@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the 8 per-(dataset, setting) latency-subset manifests for Pass B.
+"""Build the per-(dataset, setting) latency-subset manifests for Pass B.
 
 IMPORTANT: must be run with CWD = GRDR repo root. test_perquery.load_test_queries
 uses relative paths like `reranker/xpool/data/<DS>/...` to locate the canonical
@@ -22,12 +22,11 @@ import numpy as np
 
 # Reuse X-Pool's canonical query loader so the manifest's query_ids are
 # exactly the ids every Pass-A and Pass-B run sees.
-REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 XPOOL_DIR = os.path.join(REPO_ROOT, 'reranker', 'xpool')
 sys.path.insert(0, XPOOL_DIR)
-from test_perquery import load_test_queries  # noqa: E402
 
-DATASETS = ['MSRVTT', 'ACTNET', 'DIDEMO', 'LSMDC']
+DATASETS = ['MSRVTT', 'ACTNET', 'DIDEMO', 'PANDA']
 SETTINGS = [1, 2]
 ACTNET_S2_MAX_QUERIES = 1000  # matches Pass-A convention
 
@@ -42,9 +41,24 @@ def _sha256(obj):
     return hashlib.sha256(json.dumps(obj, sort_keys=True).encode()).hexdigest()
 
 
+def _load_panda_queries():
+    test_json = os.path.join(REPO_ROOT, 'data', 'panda', 'video_retreival_caption', 'panda_ret_test.json')
+    with open(test_json) as f:
+        data = json.load(f)
+    return [
+        (item['caption'], item['video'].replace('.mp4', '').split('/')[-1])
+        for item in data
+    ]
+
+
+def _load_xpool_queries(dataset):
+    from test_perquery import load_test_queries  # noqa: E402
+
+    return load_test_queries(_Cfg(dataset))
+
+
 def _build_one(dataset, setting, warmup_n, subset_n, seed):
-    cfg = _Cfg(dataset)
-    queries = load_test_queries(cfg)
+    queries = _load_panda_queries() if dataset == 'PANDA' else _load_xpool_queries(dataset)
     if dataset == 'ACTNET' and setting == 2:
         queries = queries[:ACTNET_S2_MAX_QUERIES]
     # qid = canonical video_id. Test splits have one query per video for the
@@ -78,7 +92,7 @@ def _build_one(dataset, setting, warmup_n, subset_n, seed):
             'subset_n_target': subset_n,
             'warmup_n': warmup_n,
             'source_query_count': len(queries),
-            'build_timestamp': _dt.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'build_timestamp': _dt.datetime.now(_dt.UTC).strftime('%Y-%m-%dT%H:%M:%SZ'),
         },
         'warmup_query_ids': warmup,
         'timed_query_ids': timed,

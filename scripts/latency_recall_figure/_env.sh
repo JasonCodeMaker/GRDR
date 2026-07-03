@@ -37,11 +37,13 @@ RERANK_STAGE_ROOT=${RERANK_STAGE_ROOT:-${RUNTIME_ROOT}/rerank-stage}
 RECALL_LATENCY_ROOT=${RECALL_LATENCY_ROOT:-${RUNTIME_ROOT}/recall-latency}
 RERANK_LATENCY_ROOT=${RERANK_LATENCY_ROOT:-${RUNTIME_ROOT}/rerank-latency}
 
-# Shared X-Pool reranker checkpoint (used by every method's Stage-2). In place.
-PANDA_CKPT=${PANDA_CKPT:-${REPO_ROOT}/reranker/xpool/ckpt/panda_2150k_s42_model_best.pth}
-CACHE_PARENT=${CACHE_PARENT:-${REPO_ROOT}/reranker/xpool/video_features_cache/Xpool-Panda}
+# Shared Panda X-Pool reranker/cache. In place.
+PANDA_XPOOL_CKPT=${PANDA_XPOOL_CKPT:-${REPO_ROOT}/reranker/xpool/ckpt/panda_2150k_s42_model_best.pth}
+PANDA_CKPT=${PANDA_CKPT:-${PANDA_XPOOL_CKPT}}
+PANDA_CACHE_PARENT=${PANDA_CACHE_PARENT:-${REPO_ROOT}/reranker/xpool/video_features_cache/Xpool-Panda}
+CACHE_PARENT=${CACHE_PARENT:-${PANDA_CACHE_PARENT}}
 
-# ANN baselines (hnsw/ivf) sweep PAIRED (search-breadth, candidate-budget K)
+# ANN baselines (hnsw/ivf/ivfpq/opq) sweep PAIRED (search-breadth, candidate-budget K)
 # operating points: ef_search (HNSW) / nprobe (IVF) grows with K so Stage-1 search
 # effort -- and thus Stage-1 latency -- rises across the curve instead of collapsing
 # to a vertical line, while K also drives the candidate pool handed to Stage-2.
@@ -52,10 +54,13 @@ CACHE_PARENT=${CACHE_PARENT:-${REPO_ROOT}/reranker/xpool/video_features_cache/Xp
 #   IVF:  K in {20,40,100,200}, nprobe geometric mirror 4/8/16/32 (max nprobe=32).
 ANN_HNSW_EF_BY_K=${ANN_HNSW_EF_BY_K:-"20:20 40:40 100:100 200:200"}
 ANN_IVF_NPROBE_BY_K=${ANN_IVF_NPROBE_BY_K:-"20:4 40:8 100:16 200:32"}
+ANN_PQ_M=${ANN_PQ_M:-16}
+ANN_PQ_NBITS=${ANN_PQ_NBITS:-8}
 
 # GRDR (the method) — best ckpt stable alias under output/checkpoints/GRDR/panda. Req 6.
 # Re-point latency_recall_best when a new GRDR champion lands; this default never changes.
 GRDR_REF_CKPT=${GRDR_REF_CKPT:-${REPO_ROOT}/output/checkpoints/GRDR/panda/latency_recall_best/model-3-fit/best_model.pt}
+GRDR_MODEL_NAME=${GRDR_MODEL_NAME:-t5-small}
 GRDR_CODE_NUM=${GRDR_CODE_NUM:-4096}
 GRDR_MAX_LENGTH=${GRDR_MAX_LENGTH:-3}
 GRDR_NUM_LATENT_TOKENS=${GRDR_NUM_LATENT_TOKENS:-4}
@@ -63,6 +68,7 @@ GRDR_ACCESS_GAMMA=${GRDR_ACCESS_GAMMA:-0.50}
 # Export handoff cap is per-op: candidate_handoff_cap = MULT * beam (project budget rule
 # avg_candidates <= 3x beam_size). Drivers compute MULT*OP; do NOT use a fixed scalar here.
 GRDR_HANDOFF_CAP_MULT=${GRDR_HANDOFF_CAP_MULT:-3}
+GR_BASELINE_HANDOFF_CAP_MULT=${GR_BASELINE_HANDOFF_CAP_MULT:-3}
 
 # Baseline checkpoints — all native, model/dataset layout (output/checkpoints/Baseline/<model>/panda). Req 5.
 BASE_CKPT_ROOT=${BASE_CKPT_ROOT:-${REPO_ROOT}/output/checkpoints/Baseline}
@@ -91,8 +97,8 @@ CONDA_ENV_XPOOL=${CONDA_ENV_XPOOL:-xpool}
 EERCF_CONDA_ENV=${EERCF_CONDA_ENV:-semanticID}
 
 # Sweep scope defaults.
-BASELINES=${BASELINES:-"grdr_ref tiger avg t2vindexer eercf hnsw ivf"}
-DATASETS=${DATASETS:-"MSRVTT ACTNET DIDEMO LSMDC"}
+BASELINES=${BASELINES:-"grdr_ref tiger avg t2vindexer eercf hnsw ivf ivfpq opq"}
+DATASETS=${DATASETS:-"MSRVTT ACTNET DIDEMO PANDA"}
 SETTINGS=${SETTINGS:-"2"}
 OPERATING_POINTS=${OPERATING_POINTS:-""}
 DEVICE=${DEVICE:-0}
@@ -110,14 +116,21 @@ BASELINE_C128L3_ROOT=${BASELINE_C128L3_ROOT:-${REPO_ROOT}/output/checkpoints/Bas
 # GRDR MSRVTT champion (already C=128/L=3) reused as-is in indist mode.
 GRDR_MSRVTT_INDIST_CKPT=${GRDR_MSRVTT_INDIST_CKPT:-${REPO_ROOT}/output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt}
 
-# Per-dataset X-Pool reranker ckpt (in-distribution); falls back to PANDA_CKPT for unknown ds.
+# Per-dataset X-Pool reranker ckpt (in-distribution); Panda keeps the Panda ckpt/cache.
 xpool_ckpt_for () {
     case "${1,,}" in
         msrvtt) echo "${REPO_ROOT}/reranker/xpool/ckpt/msrvtt9k_model_best.pth" ;;
         actnet) echo "${REPO_ROOT}/reranker/xpool/ckpt/actnet_model_best.pth" ;;
         didemo) echo "${REPO_ROOT}/reranker/xpool/ckpt/didemo_model_best.pth" ;;
         lsmdc)  echo "${REPO_ROOT}/reranker/xpool/ckpt/lsmdc_model_best.pth" ;;
-        *)      echo "${PANDA_CKPT}" ;;
+        panda)  echo "${PANDA_XPOOL_CKPT}" ;;
+        *)      echo "${PANDA_XPOOL_CKPT}" ;;
+    esac
+}
+xpool_cache_for () {
+    case "${1,,}" in
+        panda) echo "${PANDA_CACHE_PARENT}" ;;
+        *)     echo "${XPOOL_CACHE_INDIST}" ;;
     esac
 }
 # Per-dataset GRDR c128l3 ckpt: reuse MSRVTT champion; resolve latest model-3-fit for the rest,
@@ -125,6 +138,7 @@ xpool_ckpt_for () {
 grdr_ckpt_for () {
     local ds="${1,,}"
     if [ "${ds}" = "msrvtt" ]; then echo "${GRDR_MSRVTT_INDIST_CKPT}"; return; fi
+    if [ "${ds}" = "panda" ]; then echo "${GRDR_REF_CKPT}"; return; fi
     # Per-dataset one-off override hook: GRDR_<DS>_INDIST_CKPT (e.g. GRDR_LSMDC_INDIST_CKPT).
     local ov="GRDR_${ds^^}_INDIST_CKPT"
     if [ -n "${!ov:-}" ]; then echo "${!ov}"; return; fi
@@ -149,12 +163,17 @@ grdr_code_num_for () {
         actnet) echo 128 ;;
         didemo) echo 128 ;;
         lsmdc)  echo 128 ;;
+        panda)  echo "${GRDR_CODE_NUM}" ;;
         *)      echo "${GRDR_CODE_NUM}" ;;
     esac
 }
 # Per-dataset TIGER/AVG c128l3 retriever ckpt dir (latest best_model under Baseline_c128l3/<baseline>/<ds>).
 baseline_gr_ckpt_for () {
-    find "${BASELINE_C128L3_ROOT}/$1/${2,,}" -path '*/best_model' -type d 2>/dev/null | sort | tail -1
+    if [ "${2,,}" = "panda" ]; then
+        find "${BASE_CKPT_ROOT}/$1/panda" -path '*/best_model' -type d 2>/dev/null | sort | tail -1
+    else
+        find "${BASELINE_C128L3_ROOT}/$1/${2,,}" -path '*/best_model' -type d 2>/dev/null | sort | tail -1
+    fi
 }
 # Per-dataset EERCF model (in-distribution); the P3D feature cache is shared (dataset-keyed subdirs).
 eercf_ckpt_for () {
@@ -173,10 +192,10 @@ export REPO_ROOT FUNC_DIR LATENCY_HELPERS_DIR RUNTIME_ROOT EVAL_INPUTS_ROOT SENT
        EVAL_MODE XPOOL_CACHE_INDIST BASELINE_C128L3_ROOT GRDR_MSRVTT_INDIST_CKPT \
        CAND_GRDR_ROOT CAND_BASE_ROOT \
        RECALL_STAGE_ROOT RERANK_STAGE_ROOT RECALL_LATENCY_ROOT RERANK_LATENCY_ROOT \
-       PANDA_CKPT CACHE_PARENT \
-       ANN_HNSW_EF_BY_K ANN_IVF_NPROBE_BY_K \
-       GRDR_REF_CKPT GRDR_CODE_NUM GRDR_MAX_LENGTH GRDR_NUM_LATENT_TOKENS \
-       GRDR_ACCESS_GAMMA GRDR_HANDOFF_CAP_MULT \
+       PANDA_XPOOL_CKPT PANDA_CKPT PANDA_CACHE_PARENT CACHE_PARENT \
+       ANN_HNSW_EF_BY_K ANN_IVF_NPROBE_BY_K ANN_PQ_M ANN_PQ_NBITS \
+       GRDR_REF_CKPT GRDR_MODEL_NAME GRDR_CODE_NUM GRDR_MAX_LENGTH GRDR_NUM_LATENT_TOKENS \
+       GRDR_ACCESS_GAMMA GRDR_HANDOFF_CAP_MULT GR_BASELINE_HANDOFF_CAP_MULT \
        BASE_CKPT_ROOT TIGER_AVG_CKPT_ROOT EERCF_INIT_MODEL EERCF_CACHE_ROOT T2V_CKPT \
        MATRIX_ROOT EERCF_QUERY_SET_ROOT EERCF_DATA_ROOT EERCF_DIR MM_TVR_DIR T2V_DIR \
        EERCF_FRAME_CACHE \

@@ -4,9 +4,29 @@ import json
 import torch
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
 from typing import Dict, List, Optional
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+
+
+def resolve_cached_feature_path(cache_dir: str, dataset_name: str, video_id: str) -> str:
+    """Resolve cached X-Pool feature path, including Panda train/test subdirs."""
+    normalized_id = video_id[:-4] if video_id.endswith(('.mp4', '.avi')) else video_id
+    base = os.path.join(cache_dir, f"{normalized_id}.npz")
+    if os.path.exists(base):
+        return Path(base)
+    if dataset_name == 'PANDA':
+        candidates = [
+            os.path.join(cache_dir, 'test', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'train', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'PANDA', 'test', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'PANDA', 'train', f"{normalized_id}.npz"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return Path(path)
+    return Path(base)
 
 
 class PerQueryEvaluator:
@@ -201,7 +221,7 @@ class PerQueryEvaluator:
         """
         # Normalize video ID to match cache file naming
         normalized_id = self._normalize_video_id(video_id)
-        cache_path = os.path.join(self.cache_dir, f"{normalized_id}.npz")
+        cache_path = resolve_cached_feature_path(self.cache_dir, self.config.dataset_name, normalized_id)
 
         if not os.path.exists(cache_path):
             return None

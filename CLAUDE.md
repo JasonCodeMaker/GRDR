@@ -34,9 +34,9 @@ GRDR (Generative Recall, Dense Reranking) — a two-stage recall-rerank system f
 
 The single source of truth for all GRDR/baseline per-video storage numbers — across every package, figure, and the paper — is `scripts/panda_figure/storage_accounting_ssot.md`. Do not invent a different storage convention; cite this file.
 
-- **Convention:** per-video index footprint, accounted **symmetrically**. Exclude on *every* method the corpus-independent query/tokenizer models (GRDR's T5 generator ↔ ANN's fine-tuned text encoder; GRDR's RQ-VAE codebooks ↔ ANN's video encoder) and any rebuildable search structure (GRDR's prefix trie ↔ ANN's IVF/HNSW graph). Count only the per-video payload, the query-time dictionary (PQ codebook; GRDR has none), and the int64 video id.
+- **Convention:** per-video index footprint, accounted **symmetrically**. Exclude on *every* method the corpus-independent query/tokenizer models (GRDR's T5 generator ↔ ANN's fine-tuned text encoder; GRDR's RQ-VAE codebooks ↔ ANN's video encoder). Count the per-video payload, the query-time dictionary / quantizer, the int64 video id, and any persisted method-specific serving structure in the reported index artifact. GRDR's prefix trie remains excluded because it is rebuilt from Semantic IDs and is not persisted as a separate artifact.
 - **GRDR formula:** `S(N) = N·(V·L·b_code + b_id) = N·(4·3·2 + 8) = 32·N` bytes (26·N if 12-bit packed). Verified constants: `V=4` latent-token sIDs/video (every video registered under all 4 routes — `trainer/evaluator.py:587-592`), `L=3` codes/sID, `b_code=2 B` int16 (K=4096), `b_id=8 B`.
-- **ANN formula:** IVF-PQ/OPQ `S(N)=N·(m+8)+codebook`; anchors `N·(dim·4+8)`.
+- **ANN formula:** For Fig. 2 m16 IVF-PQ/OPQ, use the FAISS serialized-index artifact formula in `storage_accounting_ssot.md`: IVF-PQ counts PQ codes + int64 ids + PQ codebook + IVF coarse centroids + FAISS metadata; OPQ additionally counts the OPQ rotation. HNSW counts the same measured CLIP4Clip video-feature anchor plus the persisted graph artifact.
 - **Do NOT** count a fixed decoder offset (the old ~275 MB `D_decoder` is excluded), and **do NOT** size GRDR from the single-view MM-SemanticTVR json (6 B/vid) — that is a 4× undercount; the deployed index is multi-view (24 B of codes/video).
 
 ## MSR-VTT Setting 2 Rules

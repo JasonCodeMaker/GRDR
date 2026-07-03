@@ -8,14 +8,17 @@ measured byte counts:
   - GRDR        : per-video index footprint per the Storage Accounting SSOT
                  (scripts/panda_figure/storage_accounting_ssot.md): V*L sID codes +
                  int64 video id = 32 B/vid. The T5 decoder, RQ-VAE codebooks, and the
-                 prefix trie are EXCLUDED (query-side / offline / rebuildable; they
-                 cancel against ANN's encoder / structure — see the SSOT).
+                 prefix trie are EXCLUDED (query-side / offline / not persisted).
   - frame dense (X-Pool)   : measured per-video .npz bytes x N.
   - video dense (CLIP4Clip): measured per-video .npz bytes x N.
-  - ANN IVF-Flat / HNSW    : raw vectors (N x dim x 4B) + int64 id, per the Storage
-                             Accounting SSOT; the IVF lists / HNSW graph are EXCLUDED
-                             (rebuildable at load, symmetric with GRDR's excluded trie),
-                             so both anchors are 2048 + 8 = 2056 B/video.
+  - HNSW        : same measured video-feature anchor as CLIP4Clip + measured persisted
+                  graph artifact bytes/video.
+  - IVF-PQ m=16 : FAISS serialized-index footprint: PQ codes + vector ids + PQ
+                  codebook + IVF coarse centroids + measured FAISS metadata.
+  - OPQ m=16    : IVF-PQ m=16 footprint + OPQ rotation + measured FAISS metadata.
+  - IVF-Flat    : raw vectors (N x dim x 4B) + int64 id; kept in the CSV for audit but
+                  omitted from the Fig. 2 storage panel because its storage strategy is
+                  the same video-feature anchor as CLIP4Clip.
 
 Writes a long CSV (method, N, component, bytes) so the notebook renders directly.
 """
@@ -25,7 +28,26 @@ from collections import defaultdict
 
 import numpy as np
 
-from storage_ssot import GRDR_V, GRDR_L, GRDR_B_CODE, GRDR_B_ID, ANN_B_ID, grdr_bytes_per_video
+from storage_ssot import (
+    GRDR_V,
+    GRDR_L,
+    GRDR_B_CODE,
+    GRDR_B_ID,
+    ANN_B_ID,
+    IVF_NLIST,
+    PQ_M,
+    PQ_NBITS,
+    IVFPQ_FAISS_META_BYTES,
+    OPQ_FAISS_META_BYTES,
+    grdr_bytes_per_video,
+    hnsw_bytes_per_video,
+    ivf_coarse_centroid_bytes,
+    ivfpq_bytes,
+    opq_bytes,
+    opq_rotation_bytes,
+    pq_codebook_bytes,
+    measured_hnsw_graph_bytes_per_video,
+)
 
 REPO = "/home/uqzzha35/Project/SemanticID/GRDR"
 
@@ -43,6 +65,7 @@ DIM = 512  # InternVideo2 / CLIP video embedding dim.
 # Per-video dense feature cache anchors (measured on disk).
 FRAME_CACHE = f"{REPO}/reranker/xpool/video_features_cache/Xpool-Panda"  # 28 GB / 2.15M
 VIDEO_CACHE = f"{REPO}/reranker/xpool/video_features_cache/CLIP4clip"
+HNSW_INDEX_DIR = f"{REPO}/output/evaluation_results/figures/ann_baseline/indexes"
 
 
 def measured_per_video_bytes(cache_dir, n_sample=400):
@@ -67,14 +90,23 @@ def main():
     # --- per-unit measured quantities (baselines) ---
     frame_pv = measured_per_video_bytes(FRAME_CACHE)           # frame dense slope
     video_pv = measured_per_video_bytes(VIDEO_CACHE)           # video dense slope
+    hnsw_graph_pv = measured_hnsw_graph_bytes_per_video(HNSW_INDEX_DIR)
     vec_pv = DIM * 4                                           # raw f32 vector / video
     grdr_pv = grdr_bytes_per_video()                          # SSOT 32 B/video
-    anchor_pv = vec_pv + ANN_B_ID                             # SSOT anchor: vector + int64 id (structure excluded)
+    anchor_pv = vec_pv + ANN_B_ID                             # vector + int64 id
+    hnsw_pv = hnsw_bytes_per_video(video_pv, hnsw_graph_pv)
+    pq_codebook_b = pq_codebook_bytes(DIM, PQ_M, PQ_NBITS)
+    ivf_centroid_b = ivf_coarse_centroid_bytes(DIM, IVF_NLIST)
+    opq_rotation_b = opq_rotation_bytes(DIM)
 
     print(f"  GRDR bytes/video   : {grdr_pv} B  (SSOT: {GRDR_V}*{GRDR_L}*{GRDR_B_CODE} codes + {GRDR_B_ID} id)")
     print(f"  frame dense/video  : {frame_pv/1024:.2f} KB")
     print(f"  video dense/video  : {video_pv/1024:.2f} KB")
-    print(f"  ANN anchor/video   : {anchor_pv} B  (SSOT: {vec_pv} B vector + {ANN_B_ID} B id; IVF/HNSW structure excluded as rebuildable)")
+    print(f"  raw dense anchor/video : {anchor_pv} B  ({vec_pv} B vector + {ANN_B_ID} B id; IVF audit only)")
+    print(f"  HNSW graph/video   : {hnsw_graph_pv:.2f} B  (measured persisted graph artifacts)")
+    print(f"  HNSW total/video   : {hnsw_pv:.2f} B  (CLIP4Clip video-feature anchor + graph)")
+    print(f"  IVF-PQ m{PQ_M} fixed : {(pq_codebook_b + ivf_centroid_b + IVFPQ_FAISS_META_BYTES)/1024:.2f} KB  (PQ codebook + IVF centroids + FAISS metadata)")
+    print(f"  OPQ m{PQ_M} fixed    : {(pq_codebook_b + ivf_centroid_b + opq_rotation_b + OPQ_FAISS_META_BYTES)/1024:.2f} KB  (IVF-PQ fixed + OPQ rotation)")
 
     rows = []  # (method, N, component, bytes)
     for N in NS:
@@ -83,10 +115,24 @@ def main():
         rows.append(("GRDR", N, "video_id", GRDR_B_ID * N))
         rows.append(("frame_dense", N, "features", frame_pv * N))
         rows.append(("video_dense", N, "features", video_pv * N))
-        rows.append(("hnsw", N, "vectors", vec_pv * N))
-        rows.append(("hnsw", N, "video_id", ANN_B_ID * N))
+        rows.append(("hnsw", N, "features", video_pv * N))
+        rows.append(("hnsw", N, "graph", hnsw_graph_pv * N))
+        rows.append(("ivfpq", N, "pq_codes", PQ_M * N))
+        rows.append(("ivfpq", N, "video_id", ANN_B_ID * N))
+        rows.append(("ivfpq", N, "pq_codebook", pq_codebook_b))
+        rows.append(("ivfpq", N, "ivf_centroids", ivf_centroid_b))
+        rows.append(("ivfpq", N, "faiss_metadata", IVFPQ_FAISS_META_BYTES))
+        rows.append(("opq", N, "pq_codes", PQ_M * N))
+        rows.append(("opq", N, "video_id", ANN_B_ID * N))
+        rows.append(("opq", N, "pq_codebook", pq_codebook_b))
+        rows.append(("opq", N, "ivf_centroids", ivf_centroid_b))
+        rows.append(("opq", N, "opq_rotation", opq_rotation_b))
+        rows.append(("opq", N, "faiss_metadata", OPQ_FAISS_META_BYTES))
         rows.append(("ivf", N, "vectors", vec_pv * N))
         rows.append(("ivf", N, "video_id", ANN_B_ID * N))
+
+        assert sum(b for m, n, _, b in rows if m == "ivfpq" and n == N) == ivfpq_bytes(N, DIM, PQ_M, PQ_NBITS, IVF_NLIST)
+        assert sum(b for m, n, _, b in rows if m == "opq" and n == N) == opq_bytes(N, DIM, PQ_M, PQ_NBITS, IVF_NLIST)
 
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     with open(args.out, "w") as f:
@@ -100,10 +146,11 @@ def main():
     for m, N, c, b in rows:
         tot[m][N] += b
     print("\nmethod totals (MB):")
-    print("  N        " + "  ".join(f"{m:>12}" for m in ["GRDR", "video_dense", "hnsw", "ivf", "frame_dense"]))
+    table_methods = ["GRDR", "ivfpq", "opq", "video_dense", "hnsw", "ivf", "frame_dense"]
+    print("  N        " + "  ".join(f"{m:>12}" for m in table_methods))
     for N in NS:
         line = f"  {N:<8}"
-        for m in ["GRDR", "video_dense", "hnsw", "ivf", "frame_dense"]:
+        for m in table_methods:
             line += f"  {tot[m][N]/1e6:>12.1f}"
         print(line)
 

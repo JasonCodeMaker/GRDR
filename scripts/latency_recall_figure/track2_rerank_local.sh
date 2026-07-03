@@ -14,6 +14,7 @@
 #
 # Required env: BASELINE DATASET SETTING OP CAND_PATH OUT_DIR PANDA_CKPT
 # Optional env: DEVICE (0) NUM_FRAMES (12) BATCH_SIZE (32) SEED (42)
+#               MAX_QUERIES (unset; bounded smoke/debug only)
 #               CONDA_SH (default workstation miniconda) CONDA_ENV (xpool)
 #               CACHE_PARENT REPO_ROOT
 
@@ -24,7 +25,7 @@ CONDA_SH=${CONDA_SH:-/data2/uqzzha35/miniconda3/etc/profile.d/conda.sh}
 CONDA_ENV=${CONDA_ENV:-xpool}
 
 BASELINE=${BASELINE:?BASELINE required}
-DATASET=${DATASET:?DATASET required (MSRVTT|ACTNET|DIDEMO|LSMDC)}
+DATASET=${DATASET:?DATASET required (MSRVTT|ACTNET|DIDEMO|PANDA)}
 SETTING=${SETTING:?SETTING required (1|2)}
 OP=${OP:?OP required (operating point numeric value)}
 CAND_PATH=${CAND_PATH:?CAND_PATH required (Pass-A candidate JSON)}
@@ -36,6 +37,7 @@ NUM_FRAMES=${NUM_FRAMES:-12}
 BATCH_SIZE=${BATCH_SIZE:-32}
 SEED=${SEED:-42}
 CACHE_PARENT=${CACHE_PARENT:-${REPO_ROOT}/reranker/xpool/video_features_cache/Xpool-Panda}
+MAX_QUERIES=${MAX_QUERIES:-}
 
 # Workstation videos_dir per dataset (only used as fallback when cache miss).
 declare -A VIDEOS_DIR=(
@@ -43,6 +45,7 @@ declare -A VIDEOS_DIR=(
     [ACTNET]=/data2/uqzzha35/VideoRetrieval/ActivityNet/Activity_Frames_224x224
     [DIDEMO]=${REPO_ROOT}/dataset/DiDeMo
     [LSMDC]=${REPO_ROOT}/dataset/LSMDC
+    [PANDA]=${REPO_ROOT}/data/panda
 )
 vdir="${VIDEOS_DIR[${DATASET}]:-${REPO_ROOT}/dataset/${DATASET}}"
 
@@ -60,10 +63,12 @@ if [ ! -f "${PANDA_CKPT}" ]; then
     exit 2
 fi
 
-pool_flag=""
-[ "${SETTING}" = "2" ] && pool_flag="--expanded_pool"
-
 result_csv="track2_${BASELINE}_${DATASET,,}_t${SETTING}_op${OP}.csv"
+DST_CSV="${OUT_DIR}/result.csv"
+max_query_args=()
+if [ -n "${MAX_QUERIES}" ]; then
+    max_query_args=(--max_queries "${MAX_QUERIES}")
+fi
 
 echo "===== $(date -u +%FT%TZ) track2_rerank_local: ${BASELINE}/${DATASET}/t${SETTING}/op${OP} =====" | tee -a "${LOG}"
 echo "  cand=${CAND_PATH}" | tee -a "${LOG}"
@@ -77,32 +82,54 @@ conda activate "${CONDA_ENV}"
 
 cd "${REPO_ROOT}"
 
-# shellcheck disable=SC2086
-CUDA_VISIBLE_DEVICES=${DEVICE} PYTHONPATH="${REPO_ROOT}/reranker/xpool" \
-python "${REPO_ROOT}/reranker/xpool/test.py" \
-    --dataset_name "${DATASET}" \
-    --huggingface \
-    ${pool_flag} \
-    --videos_dir "${vdir}" \
-    --num_frames "${NUM_FRAMES}" \
-    --batch_size "${BATCH_SIZE}" \
-    --eval_checkpoint "${PANDA_CKPT}" \
-    --use_cached_video_features \
-    --video_cache_dir "${CACHE_PARENT}" \
-    --candidate_file "${CAND_PATH}" \
-    --rerank_mode \
-    --result_file "${result_csv}" \
-    --seed "${SEED}" \
-    --no_tensorboard \
-    2>&1 | tee -a "${LOG}"
-rc=${PIPESTATUS[0]}
+if [ "${DATASET}" = "PANDA" ] && [ "${SETTING}" = "2" ]; then
+    CUDA_VISIBLE_DEVICES=${DEVICE} PYTHONPATH="${REPO_ROOT}/reranker/xpool" \
+    python "${REPO_ROOT}/reranker/xpool/test_perquery.py" \
+        --dataset_name "${DATASET}" \
+        --huggingface \
+        --videos_dir "${vdir}" \
+        --num_frames "${NUM_FRAMES}" \
+        --batch_size "${BATCH_SIZE}" \
+        --checkpoint "${PANDA_CKPT}" \
+        --cache_dir "${CACHE_PARENT}/PANDA" \
+        --candidate_file "${CAND_PATH}" \
+        --index_safe_candidates \
+        --report_dir "${OUT_DIR}" \
+        --summary_csv "${DST_CSV}" \
+        --summary_json "${OUT_DIR}/xpool_eval.raw.json" \
+        --seed "${SEED}" \
+        "${max_query_args[@]}" \
+        2>&1 | tee -a "${LOG}"
+    rc=${PIPESTATUS[0]}
+else
+    pool_flag=""
+    [ "${SETTING}" = "2" ] && pool_flag="--expanded_pool"
+    # shellcheck disable=SC2086
+    CUDA_VISIBLE_DEVICES=${DEVICE} PYTHONPATH="${REPO_ROOT}/reranker/xpool" \
+    python "${REPO_ROOT}/reranker/xpool/test.py" \
+        --dataset_name "${DATASET}" \
+        --huggingface \
+        ${pool_flag} \
+        --videos_dir "${vdir}" \
+        --num_frames "${NUM_FRAMES}" \
+        --batch_size "${BATCH_SIZE}" \
+        --eval_checkpoint "${PANDA_CKPT}" \
+        --use_cached_video_features \
+        --video_cache_dir "${CACHE_PARENT}" \
+        --candidate_file "${CAND_PATH}" \
+        --rerank_mode \
+        --result_file "${result_csv}" \
+        --seed "${SEED}" \
+        --no_tensorboard \
+        2>&1 | tee -a "${LOG}"
+    rc=${PIPESTATUS[0]}
 
-# X-Pool writes the result CSV under output/evaluation_results/rerank/.
-SRC_CSV="${REPO_ROOT}/output/evaluation_results/rerank/${result_csv}"
-DST_CSV="${OUT_DIR}/result.csv"
-if [ -f "${SRC_CSV}" ]; then
-    cp -f "${SRC_CSV}" "${DST_CSV}"
-    echo "  copied ${SRC_CSV} -> ${DST_CSV}" | tee -a "${LOG}"
+    # X-Pool writes the result CSV under output/evaluation_results/rerank/.
+    SRC_CSV="${REPO_ROOT}/output/evaluation_results/rerank/${result_csv}"
+    if [ -f "${SRC_CSV}" ]; then
+        cp -f "${SRC_CSV}" "${DST_CSV}"
+        echo "  copied ${SRC_CSV} -> ${DST_CSV}" | tee -a "${LOG}"
+    fi
 fi
 
 # Write a small JSON shape the aggregator (figure_data.csv) can read directly,
@@ -118,7 +145,8 @@ if os.path.exists(dst_csv):
         last = rows[-1]
         for k in ("R1", "R5", "R10", "R@1", "R@5", "R@10", "MedR", "MeanR"):
             if k in last:
-                metrics[k.replace("R", "R@") if not k.startswith("R@") else k] = float(last[k]) if last[k] else None
+                out_key = f"R@{k[1:]}" if k in ("R1", "R5", "R10") else k
+                metrics[out_key] = float(last[k]) if last[k] else None
 payload = {
     "metadata": {
         "method": baseline, "dataset": ds, "setting": int(setting),

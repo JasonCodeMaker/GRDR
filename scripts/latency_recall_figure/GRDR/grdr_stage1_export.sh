@@ -4,7 +4,7 @@
 # run.py --candidate_export writes to the hardcoded repo candidates/ path
 # (trainer/evaluator.py); we rescue-copy it to CAND_OUT under candidates/GRDR/.
 # Required env: DS_LOWER SETTING OP CAND_OUT.
-set -uo pipefail
+set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 
 DS_LOWER=${DS_LOWER:?DS_LOWER required}
@@ -25,9 +25,8 @@ fi
 if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then
     GRDR_REF_CKPT="$(grdr_ckpt_for "${DS_LOWER}")"
     GRDR_CODE_NUM="$(grdr_code_num_for "${DS_LOWER}")"
-    GRDR_MAX_LENGTH=3
     [ -z "${GRDR_REF_CKPT}" ] && { echo "ERROR: no indist GRDR ckpt for ${DS_LOWER} (train it first)"; exit 2; }
-    echo "  [indist] GRDR ckpt=${GRDR_REF_CKPT} code_num=${GRDR_CODE_NUM}"
+    echo "  [indist] GRDR ckpt=${GRDR_REF_CKPT} code_num=${GRDR_CODE_NUM} max_length=${GRDR_MAX_LENGTH}"
 fi
 
 # Beam-aware export batch: beam-search generation memory ~ batch * num_beams, so cap
@@ -43,6 +42,10 @@ else
 fi
 echo "  export batch_size=${EXPORT_BS} (beam=${OP}, beam_budget=${EXPORT_BEAM_BUDGET:-4000})"
 
+marker=$(mktemp)
+trap 'rm -f "${marker}"' EXIT
+touch "${marker}"
+
 # run.py:188 overrides CUDA_VISIBLE_DEVICES from --device; the explicit CUDA_VISIBLE_DEVICES
 # keeps the shell-set GPU consistent. NLT=4 + pseudo loads the multi-view encoder slots.
 ( cd "${REPO_ROOT}" && \
@@ -50,6 +53,7 @@ echo "  export batch_size=${EXPORT_BS} (beam=${OP}, beam_budget=${EXPORT_BEAM_BU
   CUDA_VISIBLE_DEVICES=${DEVICE} "${PYTHON}" "${REPO_ROOT}/run.py" \
       --candidate_export \
       --eval_checkpoint "${GRDR_REF_CKPT}" \
+      --model_name "${GRDR_MODEL_NAME}" \
       --dataset "${DS_LOWER}" --setting "${SETTING}" \
       --code_num "${GRDR_CODE_NUM}" --max_length "${GRDR_MAX_LENGTH}" \
       --num_latent_tokens "${GRDR_NUM_LATENT_TOKENS}" \
@@ -62,11 +66,8 @@ echo "  export batch_size=${EXPORT_BS} (beam=${OP}, beam_budget=${EXPORT_BEAM_BU
       --output_json "${CAND_OUT}" --seed "${SEED}" \
 ) 2>&1 | tee "${log}"
 
-# run.py --candidate_export ignores --output_json and writes the hardcoded default path,
-# so sync it to CAND_OUT whenever the default is fresh (missing target or newer). The old
-# "only if CAND_OUT missing" guard left CAND_OUT stale on every re-run.
-default_cand="${REPO_ROOT}/candidates/${DS_LOWER}_c${GRDR_CODE_NUM}l${GRDR_MAX_LENGTH}_${OP}_candidates_t${SETTING}.json"
-if [ -f "${default_cand}" ] && { [ ! -f "${CAND_OUT}" ] || [ "${default_cand}" -nt "${CAND_OUT}" ]; }; then
-    cp -f "${default_cand}" "${CAND_OUT}"
-    echo "  synced ${default_cand} -> ${CAND_OUT}"
+if [ ! -s "${CAND_OUT}" ] || [ ! "${CAND_OUT}" -nt "${marker}" ]; then
+    echo "ERROR: GRDR export did not produce a fresh candidate JSON at ${CAND_OUT}" >&2
+    exit 2
 fi
+echo "  wrote fresh candidate JSON: ${CAND_OUT}"

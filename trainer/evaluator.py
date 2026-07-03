@@ -819,11 +819,14 @@ def save_candidates_json(results, metrics, config, output_dir, timestamp):
         "results": [_public_candidate_result(result) for result in results]
     }
 
-    filename = f"{dataset}_c{code_num}l{code_length}_{num_candidates}_candidates_t{setting}.json"
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    filepath = os.path.join(output_dir, filename)
+    explicit_output = config.get('output_json')
+    if explicit_output:
+        filepath = explicit_output
+        os.makedirs(os.path.dirname(filepath) or '.', exist_ok=True)
+    else:
+        filename = f"{dataset}_c{code_num}l{code_length}_{num_candidates}_candidates_t{setting}.json"
+        os.makedirs(output_dir, exist_ok=True)
+        filepath = os.path.join(output_dir, filename)
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
 
@@ -966,7 +969,8 @@ def test(config):
         max_text_len=128,
         num_latent_tokens=num_latent_tokens,
         cache_dir=cache_dir,
-        ids=video_codes
+        ids=video_codes,
+        use_pseudo_queries=use_pseudo_queries,
     )
 
     collate_wrapper = lambda batch: collate_fn(batch, tokenizer, max_length=128)
@@ -989,7 +993,8 @@ def test(config):
             max_text_len=128,
             num_latent_tokens=num_latent_tokens,
             cache_dir=cache_dir,
-            ids=video_codes
+            ids=video_codes,
+            use_pseudo_queries=use_pseudo_queries,
         )
         train_data_loader = build_per_video_loader(train_dataset, batch_size, tokenizer)
         print(
@@ -1320,6 +1325,12 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
     device = next(model.parameters()).device
     results = []
     per_query_ms = []
+    component_labels = (
+        'Query Encoding',
+        'sID Decoding',
+        'Candidate Construction',
+    )
+    component_ms = {label: [] for label in component_labels}
     cap_hit = False
     cap_t0 = None
 
@@ -1341,14 +1352,25 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
                 torch.cuda.synchronize()
             _t0 = time.perf_counter()
 
+            _c0 = time.perf_counter()
             caption = sample['caption']
             tok = tokenizer(caption, return_tensors='pt', padding=True,
                             truncation=True, max_length=128)
             input_ids = tok['input_ids'].to(device)
             attention_mask = tok['attention_mask'].to(device)
+            encoder_outputs = model.get_encoder()(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                return_dict=True,
+            )
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _c1 = time.perf_counter()
+
             gen_output = model.generate(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                encoder_outputs=encoder_outputs,
                 max_length=code_length + 1,
                 num_beams=num_candidates,
                 num_return_sequences=num_candidates,
@@ -1356,6 +1378,10 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
                 return_dict_in_generate=True,
                 output_scores=True,
             )
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
+            _c2 = time.perf_counter()
+
             beams = [seq.cpu().tolist() for seq in gen_output.sequences]
             beam_scores = (
                 gen_output.sequences_scores.cpu().tolist()
@@ -1377,6 +1403,9 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
             _t1 = time.perf_counter()
             if not in_warmup:
                 per_query_ms.append((_t1 - _t0) * 1000.0)
+                component_ms['Query Encoding'].append((_c1 - _c0) * 1000.0)
+                component_ms['sID Decoding'].append((_c2 - _c1) * 1000.0)
+                component_ms['Candidate Construction'].append((_t1 - _c2) * 1000.0)
                 cleaned_gt = strip_video_suffix(sample['video_id'])
                 results.append({
                     'query_idx': len(results),
@@ -1391,6 +1420,10 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
     n_processed = len(per_query_ms)
     wall_seconds = (time.perf_counter() - cap_t0) if cap_t0 is not None else 0.0
     arr = _np.asarray(per_query_ms, dtype=_np.float64) if per_query_ms else _np.zeros(1)
+    comp_arrays = {
+        label: _np.asarray(values, dtype=_np.float64) if values else _np.zeros(1)
+        for label, values in component_ms.items()
+    }
     metadata = {
         'method': 'grdr',
         'dataset': config.get('dataset', ''),
@@ -1416,6 +1449,20 @@ def _run_pass_b_latency(config, model, dataset, tokenizer, sid_to_videos, tree,
             'cap_hit': bool(cap_hit),
             'strict_latency_contract': 'batch1_candidate_handoff_full_path',
             'latency_batch_size': 1,
+            'component_mean_ms': {
+                label: float(values.mean()) if component_ms[label] else 0.0
+                for label, values in comp_arrays.items()
+            },
+            'component_p95_ms': {
+                label: float(_np.percentile(values, 95)) if component_ms[label] else 0.0
+                for label, values in comp_arrays.items()
+            },
+            'component_contract': (
+                'Query Encoding=online text tokenization, tensor preparation, and T5 encoder forward; '
+                'sID Decoding=decoder-side constrained beam-search model.generate from cached encoder outputs; '
+                'Candidate Construction=beam materialization, sID-to-video expansion, '
+                'dedup/order, and handoff cap.'
+            ),
         },
     }
     avg_cands = sum(r['num_candidates'] for r in results) / len(results) if results else 0.0

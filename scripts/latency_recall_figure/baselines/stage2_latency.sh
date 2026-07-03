@@ -21,7 +21,7 @@ LOG_ROOT=${LOG_ROOT:-${RUNTIME_ROOT}/logs/pass_b}
 DEVICE=${DEVICE:-0}
 SEED=${SEED:-42}
 BASELINES=${BASELINES:-"grdr_ref tiger avg t2vindexer eercf hnsw ivf"}
-DATASETS=${DATASETS:-"MSRVTT ACTNET DIDEMO LSMDC"}
+DATASETS=${DATASETS:-"MSRVTT ACTNET DIDEMO PANDA"}
 SETTINGS=${SETTINGS:-"1 2"}
 WARMUP_N_USED_DEFAULT=${WARMUP_N_USED_DEFAULT:-10}
 WALL_CAP_S=${WALL_CAP_S:-300}
@@ -45,6 +45,7 @@ declare -A VIDEOS_DIR=(
     [ACTNET]=${REPO_ROOT}/dataset/ActivityNet/Activity_Frames_224x224
     [DIDEMO]=${REPO_ROOT}/dataset/DiDeMo/test_frame_224x224
     [LSMDC]=${REPO_ROOT}/dataset/LSMDC/LSMDC_Videos
+    [PANDA]=${REPO_ROOT}/data/panda
 )
 
 mkdir -p "${LOG_ROOT}" "${RESULTS_B_ROOT}"
@@ -86,6 +87,7 @@ run_cell () {
             ACTNET) eercf_dt=activity ;;
             DIDEMO) eercf_dt=didemo ;;
             LSMDC)  eercf_dt=lsmdc ;;
+            PANDA)  echo "skip EERCF stage2 latency for PANDA: unsupported in this figure pipeline"; return 0 ;;
             *) echo "Unknown ds: ${ds}" >&2; return 2 ;;
         esac
         CUDA_VISIBLE_DEVICES=${DEVICE} python "${EERCF_NATIVE_PY}" \

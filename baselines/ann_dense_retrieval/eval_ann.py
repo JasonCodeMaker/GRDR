@@ -553,13 +553,21 @@ def load_saved_id_map(id_map_path):
 
 
 class QueryVideoStore:
-    def __init__(self, cache_dir, dataset, id_map):
+    def __init__(self, cache_dir, dataset, id_map, test_id_set=None):
         self.cache_dir = resolve_dataset_cache_dir(cache_dir, dataset)
+        self.dataset = dataset
         self.id_map = id_map
+        self.test_id_set = set(test_id_set or ())
         self.cache = {}
         self.video_load_s = 0.0
         self.video_pool_s = 0.0
         self.disk_reads = 0
+
+    def cache_path_for(self, video_id):
+        if self.dataset == 'panda':
+            subdir = 'test' if video_id in self.test_id_set else 'train'
+            return os.path.join(self.cache_dir, subdir, f"{video_id}.npz")
+        return os.path.join(self.cache_dir, f"{video_id}.npz")
 
     def get(self, row_id):
         row_id = int(row_id)
@@ -568,7 +576,7 @@ class QueryVideoStore:
             return cached
 
         video_id = normalize_cache_video_id(self.id_map[row_id])
-        cache_path = os.path.join(self.cache_dir, f"{video_id}.npz")
+        cache_path = self.cache_path_for(video_id)
         if not os.path.exists(cache_path):
             raise FileNotFoundError(f"Cached video features not found: {cache_path}")
 
@@ -775,7 +783,7 @@ def search_batched(query_embs, structure, id_map, idx_type, args, gt_indices, k,
 
 
 def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx_type,
-                     args, gt_indices, k, num_warmup):
+                     args, gt_indices, k, num_warmup, test_id_set=None):
     """Online path: preload structure once; reload video features from disk per query."""
     n = len(captions)
     retrieved = np.full((n, k), -1, dtype=np.int64)
@@ -807,7 +815,8 @@ def search_per_query(captions, model, tokenizer, device, index_path, id_map, idx
         # latency includes re-reading + re-pooling each scored video from disk
         # (video_load dominates similarity). This conflates feature I/O with ANN
         # compute; a deployed index would hold pooled vectors in RAM.
-        vector_store = QueryVideoStore(args.cache_dir, args.dataset, id_map)
+        vector_store = QueryVideoStore(
+            args.cache_dir, args.dataset, id_map, test_id_set=test_id_set)
         query_vec = normalize(emb)[0]
         t0 = time.perf_counter()
         rows, scores, search_stats = search_manual(
@@ -895,7 +904,7 @@ def search_resident_batched(index, query_embs, gt_indices, k):
 
 
 def search_resident_per_query(index, captions, model, tokenizer, device, args, gt_indices, k):
-    """Latency path for PQ types: batch=1 encode + resident ADC search; no video reload."""
+    """Latency path for resident FAISS indexes: batch=1 encode + index.search."""
     n = len(captions)
     retrieved = np.full((n, k), -1, dtype=np.int64)
     distances = np.full((n, k), -np.inf, dtype=np.float32)
@@ -905,7 +914,7 @@ def search_resident_per_query(index, captions, model, tokenizer, device, args, g
     for i in range(min(args.num_warmup, n)):
         _ = encode_text_per_query(captions[i], model, tokenizer, device)
 
-    print(f"  Per-query timing (resident PQ): {n} queries "
+    print(f"  Per-query timing (resident FAISS): {n} queries "
           f"(batch=1 encode + resident index.search, no video reload)")
     wall_cap_s = float(getattr(args, 'wall_time_cap_s', 1e18))
     cap_t0 = time.perf_counter()
@@ -1121,12 +1130,14 @@ def main():
     # Pass-B latency mode: if --subset_manifest is provided, build (warmup + timed)
     # ordered captions list and force per_query_timing on with num_warmup = warmup_n_used.
     pass_b_manifest = None
+    pool_test_pairs = None
     if args.subset_manifest:
         import sys as _sys
         _sys.path.insert(0, args.latency_helpers_dir)
         from latency_helpers import load_subset_manifest as _load_sm  # noqa: E402
         pass_b_manifest = _load_sm(args.subset_manifest)
         full_pairs = load_test_queries(args.dataset)
+        pool_test_pairs = full_pairs
         by_vid = {}
         dup = {}
         for vid, cap in full_pairs:
@@ -1155,9 +1166,12 @@ def main():
         test_pairs = load_test_queries(args.dataset)
     raw_test_ids = [vid for vid, _ in test_pairs]
     test_captions = [cap for _, cap in test_pairs]
-    # Strip clip-suffix and dedupe to get the test pool base IDs.
-    unique_test_base = dedup_by_base(raw_test_ids)
-    print(f"Test queries: {len(test_pairs)}, Unique base test videos: {len(unique_test_base)}")
+    # Strip clip-suffix and dedupe to get the test pool base IDs. Latency
+    # subset mode samples queries only; the Setting-2 search pool still uses
+    # the full dataset test split plus train distractors.
+    pool_raw_test_ids = [vid for vid, _ in (pool_test_pairs or test_pairs)]
+    unique_test_base = dedup_by_base(pool_raw_test_ids)
+    print(f"Test queries: {len(test_pairs)}, Unique base test videos in pool: {len(unique_test_base)}")
 
     # 2. Build pool (test first, then train extras for setting 2).
     if args.distractor_manifest:
@@ -1298,7 +1312,6 @@ def main():
                 build_time,
             )
             print(f"Offline structure saved to: {index_path}")
-            del index
             saved_pool_ids = load_saved_id_map(id_map_path)
             index_artifacts[idx_type] = {
                 'structure_path': index_path,
@@ -1307,11 +1320,14 @@ def main():
             }
 
             if args.per_query_timing:
+                del index
                 metrics, retrieved, distances, per_query_timings = search_per_query(
                     test_captions, clip_model, tokenizer, device, index_path,
                     saved_pool_ids,
-                    idx_type, args, gt_indices, search_k, args.num_warmup)
+                    idx_type, args, gt_indices, search_k, args.num_warmup,
+                    test_id_set=set(unique_test_base) if args.dataset == 'panda' else None)
             else:
+                del index
                 t0 = time.perf_counter()
                 structure = load_saved_structure(index_path, idx_type)
                 structure_load_time_s = time.perf_counter() - t0

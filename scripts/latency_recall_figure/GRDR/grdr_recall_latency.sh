@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # GRDR (grdr_ref) Recall-Latency cell: stage-1 retrieval latency for one (ds,setting,op)
 # on the 200-query subset manifest. Required env: BASELINE DATASET SETTING OP_VALUE.
-set -uo pipefail
+set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/_env.sh"
 
 BASELINE=${BASELINE:?}; DATASET=${DATASET:?}; SETTING=${SETTING:?}; OP_VALUE=${OP_VALUE:?}
@@ -25,8 +25,13 @@ if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then
     GRDR_CODE_NUM="$(grdr_code_num_for "${ds_lower}")"
     [ -z "${GRDR_REF_CKPT}" ] && { echo "ERROR: no indist GRDR ckpt for ${ds_lower}" >&2; exit 2; }
 fi
+marker=$(mktemp)
+trap 'rm -f "${marker}"' EXIT
+touch "${marker}"
+
 CUDA_VISIBLE_DEVICES=${DEVICE} "${PYTHON}" "${REPO_ROOT}/run.py" \
     --candidate_export --eval_checkpoint "${GRDR_REF_CKPT}" \
+    --model_name "${GRDR_MODEL_NAME}" \
     --dataset "${ds_lower}" --setting "${SETTING}" \
     --code_num "${GRDR_CODE_NUM}" --max_length "${GRDR_MAX_LENGTH}" \
     --num_latent_tokens "${GRDR_NUM_LATENT_TOKENS}" \
@@ -38,3 +43,8 @@ CUDA_VISIBLE_DEVICES=${DEVICE} "${PYTHON}" "${REPO_ROOT}/run.py" \
     --warmup_n_used "${warmup_n}" --wall_time_cap_s "${WALL_CAP_S}" \
     --device "${DEVICE}" \
     --output_json "${cand_out}" --seed "${SEED}" 2>&1 | tee "${log}"
+
+if [ ! -s "${cand_out}" ] || [ ! "${cand_out}" -nt "${marker}" ]; then
+    echo "ERROR: GRDR recall-latency did not produce a fresh JSON at ${cand_out}" >&2
+    exit 2
+fi

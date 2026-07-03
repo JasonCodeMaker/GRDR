@@ -11,7 +11,7 @@ __pycache__/
 /test/
 /tests/
 docs
-
+paper/
 # Data, caches, and external assets
 /dataset/*
 !/dataset/.gitkeep

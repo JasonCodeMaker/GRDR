@@ -10,8 +10,7 @@ default_ops_for () {
         grdr_ref)                      echo "20 50 100 200 300" ;;
         tiger|avg|t2vindexer)          echo "20 50 100 200 300" ;;
         eercf)                         echo "1 10 25 50" ;;
-        hnsw)                          echo "20 40 100 200" ;;
-        ivf)                           echo "20 40 100 200" ;;
+        hnsw|ivf|ivfpq|opq)            echo "20 40 100 200" ;;
         *) echo "" ;;
     esac
 }
@@ -27,12 +26,56 @@ ann_knob_for () {
     echo "${last}"
 }
 
+use_dataset_xpool () {
+    local ds_lower="${1,,}"
+    if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then
+        PANDA_CKPT="$(xpool_ckpt_for "${ds_lower}")"
+        CACHE_PARENT="$(xpool_cache_for "${ds_lower}")"
+    fi
+}
+
+write_placeholder_candidate_json () {
+    local out_json=$1 method=$2 ds_lower=$3 setting=$4 op=$5 status=$6 reason=$7
+    mkdir -p "$(dirname "${out_json}")"
+    "${PYTHON}" - "$out_json" "$method" "$ds_lower" "$setting" "$op" "$status" "$reason" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, method, dataset, setting, op, status, reason = sys.argv[1:]
+payload = {
+    "metadata": {
+        "method": method,
+        "dataset": dataset,
+        "setting": int(setting),
+        "operating_point": int(op),
+        "status": status,
+        "reason": reason,
+    },
+    "metrics": {},
+    "results": [],
+}
+Path(path).write_text(json.dumps(payload, indent=2) + "\n")
+PY
+}
+
+cap_panda_gr_baseline_candidates () {
+    local out_json=$1 method=$2 ds_lower=$3 op=$4
+    [ "${ds_lower}" = "panda" ] || return 0
+    [ -s "${out_json}" ] || return 0
+    "${PYTHON}" "${FUNC_DIR}/utils/cap_candidate_json.py" \
+        --path "${out_json}" \
+        --cap "$(( GR_BASELINE_HANDOFF_CAP_MULT * op ))" \
+        --method "${method}" \
+        --cap-policy "panda_gr_baseline_cap=${GR_BASELINE_HANDOFF_CAP_MULT}x_beam"
+}
+
 # ---- Recall-Stage: stage-1 candidate export (effectiveness; CanHit) ----
 cell_recall_stage () {
     local baseline=$1 ds=$2 setting=$3 op=$4
     local ds_lower="${ds,,}"
     # indist: ANN (hnsw/ivf) stage-1 is built over per-dataset X-Pool features.
-    if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then PANDA_CKPT="$(xpool_ckpt_for "${ds_lower}")"; CACHE_PARENT="${XPOOL_CACHE_INDIST}"; fi
+    use_dataset_xpool "${ds_lower}"
     case "${baseline}" in
         grdr_ref)
             local cand_out="${CAND_GRDR_ROOT}/${ds_lower}/${ds_lower}_t${setting}_${op}_candidates.json"
@@ -46,7 +89,11 @@ cell_recall_stage () {
         tiger|avg)
             local cand_out="${CAND_BASE_ROOT}/${baseline}/${ds_lower}/${ds_lower}_${baseline}_${op}_candidates_t${setting}.json"
             mkdir -p "$(dirname "${cand_out}")"
-            if [ "${SKIP_EXISTING}" -eq 1 ] && [ -f "${cand_out}" ]; then echo "  skip-existing: ${cand_out}"; return 0; fi
+            if [ "${SKIP_EXISTING}" -eq 1 ] && [ -f "${cand_out}" ]; then
+                cap_panda_gr_baseline_candidates "${cand_out}" "${baseline}" "${ds_lower}" "${op}"
+                echo "  skip-existing: ${cand_out}"
+                return 0
+            fi
             if [ "${DRY_RUN}" -eq 1 ]; then echo "  DRY: ${baseline} ${ds} t${setting} op=${op}"; return 0; fi
             # indist: per-dataset C=128/L=3 ckpt (env so the expanded TIGER_CKPT/AVG_CKPT parse as assignments).
             local indist_env=()
@@ -54,18 +101,28 @@ cell_recall_stage () {
                 local gr_ck; gr_ck="$(baseline_gr_ckpt_for "${baseline}" "${ds_lower}")"
                 [ -z "${gr_ck}" ] && { echo "ERROR: no indist ${baseline} ckpt for ${ds_lower} (train it first)"; return 2; }
                 local ck_var=TIGER_CKPT; [ "${baseline}" = "avg" ] && ck_var=AVG_CKPT
-                indist_env=(env "CODE_NUM=128" "LAYERS=3" "${ck_var}=${gr_ck}")
+                if [ "${ds_lower}" = "panda" ]; then
+                    indist_env=(env "CODE_NUM=${GRDR_CODE_NUM}" "LAYERS=${GRDR_MAX_LENGTH}" "${ck_var}=${gr_ck}")
+                else
+                    indist_env=(env "CODE_NUM=128" "LAYERS=3" "${ck_var}=${gr_ck}")
+                fi
             fi
             DEVICE="${DEVICE}" SEED="${SEED}" TOPK="${op}" \
                 BASELINES="${baseline}" DATASETS="${ds}" SETTINGS="${setting}" \
                 CAND_ROOT="${CAND_BASE_ROOT}" LOG_ROOT="${RECALL_STAGE_ROOT}/_logs/avg_tiger_op${op}" \
                 "${indist_env[@]}" bash "${FUNC_DIR}/baselines/avg_tiger_stage1_export.sh"
+            cap_panda_gr_baseline_candidates "${cand_out}" "${baseline}" "${ds_lower}" "${op}"
             ;;
         t2vindexer)
             local cand_out="${CAND_BASE_ROOT}/t2vindexer/${ds_lower}/${ds_lower}_t${setting}_${op}_candidates.json"
             mkdir -p "$(dirname "${cand_out}")"
             if [ "${SKIP_EXISTING}" -eq 1 ] && [ -f "${cand_out}" ]; then echo "  skip-existing: ${cand_out}"; return 0; fi
             if [ "${DRY_RUN}" -eq 1 ]; then echo "  DRY: t2vindexer ${ds} t${setting} op=${op}"; return 0; fi
+            if [ "${ds_lower}" = "panda" ]; then
+                write_placeholder_candidate_json "${cand_out}" "t2vindexer" "${ds_lower}" "${setting}" "${op}" "OOM" \
+                    "Panda k=4096 T2VIndexer export exceeds the figure workstation memory budget"
+                return 0
+            fi
             if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then
                 # Real c128l3 export: main.py --mode eval (test()) writes the figure candidate JSON directly.
                 local t2v_ck; t2v_ck="$(t2v_ckpt_for "${ds_lower}")"
@@ -87,6 +144,8 @@ cell_recall_stage () {
             case "${ds}" in
                 MSRVTT) eercf_dt=msrvtt ;; ACTNET) eercf_dt=activity ;;
                 DIDEMO) eercf_dt=didemo ;; LSMDC) eercf_dt=lsmdc ;;
+                PANDA)  write_placeholder_candidate_json "${cand_out}" "eercf" "${ds_lower}" "${setting}" "${op}" "unsupported" \
+                            "No Panda EERCF feature cache/checkpoint is available in this figure pipeline"; return 0 ;;
                 *) echo "Unknown EERCF ds ${ds}" >&2; return 2 ;;
             esac
             # indist: per-dataset EERCF model (P3D feature cache stays shared/dataset-keyed).
@@ -107,11 +166,12 @@ cell_recall_stage () {
                 --settings "${setting}" --rerantopk "${op}" --output-op "${op}" \
                 --init-model "${eercf_init}"
             ;;
-        hnsw|ivf)
+        hnsw|ivf|ivfpq|opq)
             # op = candidate budget K (num_candidates). ef_search/nprobe are PAIRED to K
             # (ANN_*_BY_K maps in _env.sh) so search effort grows with the budget: the
             # sweep traces a recall-vs-latency curve (Stage-1 effort rises with K) while
-            # K also sizes the Stage-2 candidate pool. HNSW ef_search=K; IVF nprobe 4/8/16/32.
+            # K sizes the full ANN retrieval output. HNSW ef_search=K; IVF-family nprobe
+            # is 4/8/16/32; IVFPQ/OPQ additionally use PQ m=16, nbits=8.
             # Per-op candidate JSON (effectiveness) + ANN recall-latency captured here
             # (recall-latency.sh skips ann; this is the single owner of ANN timing).
             # A.1/A.2 can be gated independently (ANN_RUN_EFFECTIVENESS / ANN_RUN_LATENCY)
@@ -120,16 +180,15 @@ cell_recall_stage () {
             if [ "${baseline}" = "hnsw" ]; then ann_knob=$(ann_knob_for "${ANN_HNSW_EF_BY_K}" "${op}"); else ann_knob=$(ann_knob_for "${ANN_IVF_NPROBE_BY_K}" "${op}"); fi
             local cand_out="${CAND_BASE_ROOT}/${baseline}/${ds_lower}/${ds_lower}_ann_${baseline}_${op}_candidates_t${setting}.json"
             local lat_out="${RECALL_LATENCY_ROOT}/${baseline}/${ds_lower}/${ds_lower}_t${setting}_${op}_latency.json"
-            local ann_result_csv="${RERANK_STAGE_ROOT}/${baseline}/${ds_lower}/setting${setting}/${op}/result.csv"
             mkdir -p "$(dirname "${cand_out}")" "$(dirname "${lat_out}")"
             # A.1 effectiveness (warm-cache search_batched).
             if [ "${ANN_RUN_EFFECTIVENESS:-1}" -ne 1 ]; then echo "  skip effectiveness (gated off): ${baseline} ${ds} t${setting} op=${op}"
-            elif [ "${SKIP_EXISTING}" -eq 1 ] && { [ -f "${cand_out}" ] || [ -f "${ann_result_csv}" ]; }; then
-                echo "  skip-existing effectiveness: ${cand_out} OR ${ann_result_csv}"
+            elif [ "${SKIP_EXISTING}" -eq 1 ] && [ -f "${cand_out}" ]; then
+                echo "  skip-existing effectiveness: ${cand_out}"
             elif [ "${DRY_RUN}" -eq 1 ]; then echo "  DRY effectiveness: ${baseline} ${ds} t${setting} op=${op}"
             else
                 local knob_args="NUM_CANDIDATES=${op}"
-                if [ "${baseline}" = "hnsw" ]; then knob_args="${knob_args} HNSW_EF_SEARCH=${ann_knob}"; else knob_args="${knob_args} IVF_NPROBE=${ann_knob}"; fi
+                if [ "${baseline}" = "hnsw" ]; then knob_args="${knob_args} HNSW_EF_SEARCH=${ann_knob}"; else knob_args="${knob_args} IVF_NPROBE=${ann_knob} PQ_M=${ANN_PQ_M} PQ_NBITS=${ANN_PQ_NBITS}"; fi
                 DEVICE="${DEVICE}" INDICES="${baseline}" DATASETS="${ds_lower}" SETTINGS="${setting}" \
                     CAND_ROOT="${CAND_BASE_ROOT}" CACHE_PARENT="${CACHE_PARENT}" PANDA_CKPT="${PANDA_CKPT}" \
                     OUT_ROOT="${RUNTIME_ROOT}/ann_baseline" OUTPUT_JSON="${cand_out}" \
@@ -142,7 +201,7 @@ cell_recall_stage () {
             elif [ "${DRY_RUN}" -eq 1 ]; then echo "  DRY latency: ${baseline} ${ds} t${setting} op=${op}"
             else
                 local ann_lat_knob=""
-                if [ "${baseline}" = "hnsw" ]; then ann_lat_knob="HNSW_EF_SEARCH=${ann_knob}"; else ann_lat_knob="IVF_NPROBE=${ann_knob}"; fi
+                if [ "${baseline}" = "hnsw" ]; then ann_lat_knob="HNSW_EF_SEARCH=${ann_knob}"; else ann_lat_knob="IVF_NPROBE=${ann_knob} PQ_M=${ANN_PQ_M} PQ_NBITS=${ANN_PQ_NBITS}"; fi
                 # `env` so the expanded ${ann_lat_knob} token is parsed as an assignment
                 # (bash recognizes inline assignment prefixes before expansion, not after).
                 env BASELINE="${baseline}" DATASET="${ds}" SETTING="${setting}" OP_VALUE="${op}" \
@@ -160,30 +219,22 @@ cell_rerank_stage () {
     local baseline=$1 ds=$2 setting=$3 op=$4
     local ds_lower="${ds,,}"
     # indist: per-dataset X-Pool reranker + in-distribution feature cache.
-    if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then PANDA_CKPT="$(xpool_ckpt_for "${ds_lower}")"; CACHE_PARENT="${XPOOL_CACHE_INDIST}"; fi
+    use_dataset_xpool "${ds_lower}"
     local report_dir="${RERANK_STAGE_ROOT}/${baseline}/${ds_lower}/setting${setting}/${op}"
     mkdir -p "${report_dir}"
     local out_json="${report_dir}/xpool_eval.json"
-    local ann_out_csv="${report_dir}/result.csv"
+    case "${baseline}" in
+        hnsw|ivf|ivfpq|opq) echo "  skip ANN rerank-stage (native full ANN retrieval): ${baseline}"; return 0 ;;
+    esac
     if [ "${SKIP_EXISTING}" -eq 1 ]; then
         case "${baseline}" in
-            hnsw|ivf) [ -f "${ann_out_csv}" ] && { echo "  skip-existing rerank: ${ann_out_csv}"; return 0; } ;;
             *)        [ -f "${out_json}" ]    && { echo "  skip-existing rerank: ${out_json}"; return 0; } ;;
         esac
     fi
     if [ "${DRY_RUN}" -eq 1 ]; then echo "  DRY rerank: ${baseline} ${ds} t${setting} op=${op}"; return 0; fi
     case "${baseline}" in
-        hnsw|ivf)
-            local rerank_cand="${CAND_BASE_ROOT}/${baseline}/${ds_lower}/${ds_lower}_ann_${baseline}_${op}_candidates_t${setting}.json"
-            DEVICE="${DEVICE}" INDICES="${baseline}" DATASETS="${ds}" SETTINGS="${setting}" \
-                CAND_ROOT="${CAND_BASE_ROOT}" RESULTS_ROOT="${RERANK_STAGE_ROOT}" \
-                PANDA_CKPT="${PANDA_CKPT}" CACHE_PARENT="${CACHE_PARENT}" \
-                CAND_PATH="${rerank_cand}" LOG_ROOT="${RERANK_STAGE_ROOT}/_logs/ann_rerank" \
-                MANIFESTS_DIR="${SENTINEL_DIR}" \
-                bash "${FUNC_DIR}/baselines/ann_rerank.sh"
-            # ann_rerank writes setting<s>/result.csv (overwritten per cell); preserve per-op.
-            local ann_csv_src="${RERANK_STAGE_ROOT}/${baseline}/${ds_lower}/setting${setting}/result.csv"
-            [ -f "${ann_csv_src}" ] && { cp -f "${ann_csv_src}" "${report_dir}/result.csv"; echo "  ann result.csv preserved: ${report_dir}/result.csv"; }
+        hnsw|ivf|ivfpq|opq)
+            return 0  # native full ANN retrieval: R@K comes from the ANN candidate JSON.
             ;;
         eercf)
             return 0  # native sim-matrix baseline: no X-Pool rerank (R@1 from its own candidates).
@@ -209,7 +260,7 @@ cell_recall_latency () {
     local baseline=$1 ds=$2 setting=$3 op=$4
     local ds_lower="${ds,,}"
     # ANN stage-1 latency is owned by Recall-Stage A.2; skip here.
-    case "${baseline}" in hnsw|ivf) echo "  skip (recall-stage owns ANN latency): ${baseline}"; return 0 ;; esac
+    case "${baseline}" in hnsw|ivf|ivfpq|opq) echo "  skip (recall-stage owns ANN latency): ${baseline}"; return 0 ;; esac
     local lat_out="${RECALL_LATENCY_ROOT}/${baseline}/${ds_lower}/${ds_lower}_t${setting}_${op}_latency.json"
     mkdir -p "$(dirname "${lat_out}")"
     if [ "${SKIP_EXISTING}" -eq 1 ] && [ -f "${lat_out}" ]; then echo "  skip-existing: ${lat_out}"; return 0; fi
@@ -230,8 +281,8 @@ cell_rerank_latency () {
     local baseline=$1 ds=$2 setting=$3 op=$4
     local ds_lower="${ds,,}"
     # indist: per-dataset X-Pool reranker + in-distribution feature cache (stage-2 latency).
-    if [ "${EVAL_MODE:-zeroshot}" = "indist" ]; then PANDA_CKPT="$(xpool_ckpt_for "${ds_lower}")"; CACHE_PARENT="${XPOOL_CACHE_INDIST}"; fi
-    case "${baseline}" in hnsw|ivf)
+    use_dataset_xpool "${ds_lower}"
+    case "${baseline}" in hnsw|ivf|ivfpq|opq)
         if [ "${ALLOW_ANN_RERANK_LATENCY:-0}" != "1" ]; then echo "  skip ANN rerank-latency: ${baseline}"; return 0; fi
         ;;
     esac
@@ -280,6 +331,10 @@ run_stage_loop () {
             done
         done
     done
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        echo "${sentinel_name} dry-run: sentinel not written"
+        return 0
+    fi
     mkdir -p "${SENTINEL_DIR}"
     local sentinel="${SENTINEL_DIR}/${sentinel_name}.done"
     { echo "status=ok"; echo "completed_at=$(date -u +%FT%TZ)"; echo "baselines=${BASELINES}"; echo "datasets=${DATASETS}"; echo "settings=${SETTINGS}"; } > "${sentinel}"
