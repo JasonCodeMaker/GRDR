@@ -105,7 +105,6 @@ def parse_args():
     parser.add_argument('--num_latent_tokens', type=int, default=4,
                        help='Number of latent tokens in VideoRQVAE')
 
-    # Multi-view fix pipeline (research_html/packages/2026-05-24-multiview-fix-pipeline)
     # K1 path is now the default; ablate via --no-codebook_seed_all_slots.
     parser.add_argument('--codebook_seed_all_slots', action=argparse.BooleanOptionalAction, default=True,
                        help='K1: at every loop boundary, run faiss-GPU k-means on '
@@ -114,7 +113,7 @@ def parse_args():
     # Evaluation arguments
     parser.add_argument('--eval', action='store_true', default=False, help='Evaluate the model')
     parser.add_argument('--eval_checkpoint', type=str,
-                        default="output/checkpoints/GRDR/msrvtt/bucket_candidate_k20/20260428163014-fit_bucket_l010_g10_k20_s42/model-3-fit/best_model.pt",
+                        default="output/checkpoints/GRDR/msrvtt/best_model/best_model.pt",
                         help='Checkpoint path for evaluation')
     parser.add_argument('--num_candidates', type=int, default=20,
                        help='Number of constrained-generation beams/routes per query before sID expansion')
@@ -126,8 +125,6 @@ def parse_args():
                        help='Setting 2 only: if >0, deterministically subsample N train videos (seed fixed=42) before merging with test; 0 = use full train pool')
     parser.add_argument('--detailed_generation', action='store_true', default=False,
                        help='Include (sID, video_id) pairs in candidates and ground_truth_sID in output')
-    # BARS reorder is the canonical evaluation strategy (research_html/packages/
-    # 2026-05-15-panda-baselines + 2026-05-16-panda-pseudo-queries-multiview).
     # Default ON for every eval; disable via --no-inference_reorder_by_access_score.
     parser.add_argument('--inference_reorder_by_access_score', action=argparse.BooleanOptionalAction, default=True,
                        help='Reorder expanded candidates with BARS beam score plus bucket penalty. Default on.')
@@ -139,8 +136,7 @@ def parse_args():
                        help='Directory for exported candidate JSON')
     parser.add_argument('--candidate_sidecar_dir', type=str, default=None,
                        help='Optional directory for per-query candidate audit JSONL sidecars')
-    # Pass-B (efficiency) latency contract --- see
-    # research_html/packages/2026-05-15-panda-baselines/docs/eval-efficiency.html
+    # Pass-B (efficiency) latency contract for subset-based latency measurement.
     parser.add_argument('--candidate_export', action='store_true', default=False,
                        help='Pass-B Stage-1 entry: run candidate export only (equivalent to --eval with latency-mode setup)')
     parser.add_argument('--subset_manifest', type=str, default=None,
@@ -150,7 +146,7 @@ def parse_args():
     parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
                        help='Per-cell wall-time cap; stops between queries when exceeded')
     parser.add_argument('--latency_helpers_dir', type=str,
-                       default='/home/uqzzha35/Project/SemanticID/GRDR/research_html/packages/2026-05-15-panda-baselines/scripts',
+                       default='utils',
                        help='Directory containing latency_helpers.py')
     parser.add_argument('--output_json', type=str, default=None,
                        help='Pass-B explicit output path for the candidate JSON (overrides --candidate_output_dir)')
@@ -237,7 +233,7 @@ def main():
             config['code_length'] = loop + 1
             config['prev_model'] = checkpoint
             config['prev_id'] = f'{checkpoint}.code' if checkpoint is not None else None
-            # config['epochs'] = 3 if loop == 0 else args.pretrain_epochs
+            config['epochs'] = args.pretrain_epochs
             config['loss_w'] = 1
             config['lr'] = args.pretrain_lr
             if loop == args.start_loop and args.skip_pretrain:

@@ -1,6 +1,7 @@
 import os
 import json
 import argparse
+import csv
 import random
 from types import SimpleNamespace
 
@@ -19,13 +20,18 @@ def parse_args():
     parser.add_argument('--num_frames', type=int, default=4)
     parser.add_argument('--device', default='0')
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--out_json', required=True)
+    parser.add_argument('--out_json')
+    parser.add_argument('--result_file',
+                        help='CSV result path, relative to output/evaluation_results/rerank unless absolute')
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--load_workers', type=int, default=16,
                         help='threads for parallel np.load of candidate frame embeds')
     parser.add_argument('--max_candidates', type=int, default=0,
                         help='cap each query to its top-K stage-1 candidates before rerank (0 = no cap)')
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.out_json and not args.result_file:
+        parser.error('at least one of --out_json or --result_file is required')
+    return args
 
 
 def set_seed(seed):
@@ -61,6 +67,28 @@ def load_frame_cache(video_id, cache_dir, num_frames):
                 f"{video_id}: got {frame_embeds.shape}, expected ({num_frames}, 512)"
             return frame_embeds
     raise FileNotFoundError(f"No cache for '{video_id}' under {panda_dir}/(test|train)")
+
+
+def resolve_result_csv_path(result_file):
+    if os.path.isabs(result_file):
+        return result_file
+    return os.path.join("output", "evaluation_results", "rerank", result_file)
+
+
+def write_result_csv(result_file, metrics):
+    csv_path = resolve_result_csv_path(result_file)
+    os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+    with open(csv_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(['R@1', 'R@5', 'R@10', 'MedR', 'MeanR'])
+        writer.writerow([
+            metrics['R@1'],
+            metrics['R@5'],
+            metrics['R@10'],
+            metrics['MedR'],
+            metrics['MeanR'],
+        ])
+    print(f"wrote {csv_path}")
 
 
 def encode_texts(model, tokenizer, texts, device, batch_size):
@@ -146,13 +174,18 @@ def main():
         "avg_candidates_used": float(np.mean(cand_counts)),
     }
 
-    os.makedirs(os.path.dirname(args.out_json), exist_ok=True)
-    json.dump({"metadata": {"candidate_file": args.candidate_file,
-                            "eval_checkpoint": args.eval_checkpoint,
-                            "num_queries": n, "num_frames": args.num_frames,
-                            "max_candidates": cap},
-               "metrics": metrics}, open(args.out_json, 'w'), indent=2)
-    print(f"wrote {args.out_json} metrics={metrics}")
+    if args.out_json:
+        out_dir = os.path.dirname(args.out_json)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        json.dump({"metadata": {"candidate_file": args.candidate_file,
+                                "eval_checkpoint": args.eval_checkpoint,
+                                "num_queries": n, "num_frames": args.num_frames,
+                                "max_candidates": cap},
+                   "metrics": metrics}, open(args.out_json, 'w'), indent=2)
+        print(f"wrote {args.out_json} metrics={metrics}")
+    if args.result_file:
+        write_result_csv(args.result_file, metrics)
 
 
 if __name__ == '__main__':

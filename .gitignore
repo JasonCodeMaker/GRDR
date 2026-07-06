@@ -6,11 +6,16 @@ __pycache__/
 
 # Local tools and scratch
 .claude/
+.codex
+.vscode/
 .test_artifacts/
 .worktrees/
 /test/
 /tests/
-docs
+/docs/superpowers/
+AGENTS.md
+CLAUDE.md
+WORKFLOW.md
 paper/
 # Data, caches, and external assets
 /dataset/*
@@ -34,17 +39,13 @@ candidates/_backup
 /outputs
 
 # Generated candidates
+/candidates/*.json
 /candidates/baseline/
 /candidates/baselines/
 /candidates/GRDR/*/
 /candidates/*_ann_*_candidates_t*.json
 /candidates/panda_c*_candidates_t*.json
 
-scripts/panda
-
 # Research packages are opt-in so abandoned directions stay local.
 /research/*
-/research/active/*
-/research/active/**/__pycache__/
-/research/active/**/*.py[cod]
 /research_html

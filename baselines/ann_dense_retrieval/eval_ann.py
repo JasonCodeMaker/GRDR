@@ -89,8 +89,7 @@ def parse_args():
                              'per-query timings in JSON metadata.')
     parser.add_argument('--num_warmup', type=int, default=0,
                         help='Warmup queries for --per_query_timing')
-    # Pass-B (efficiency) latency contract --- see GRDR research_html package
-    # 2026-05-15-panda-baselines/docs/eval-efficiency.html
+    # Pass-B (efficiency) latency contract for subset-based latency measurement.
     parser.add_argument('--subset_manifest', type=str, default=None,
                         help='Pass-B latency manifest; overrides --query_manifest')
     parser.add_argument('--warmup_n_used', type=int, default=10,
@@ -98,7 +97,7 @@ def parse_args():
     parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
                         help='Per-cell wall-time cap; stops between queries when exceeded')
     parser.add_argument('--latency_helpers_dir', type=str,
-                        default='/home/uqzzha35/Project/SemanticID/GRDR/research_html/packages/2026-05-15-panda-baselines/scripts',
+                        default='utils',
                         help='Directory containing latency_helpers.py')
     parser.add_argument('--output_json', type=str, default=None,
                         help='Optional override path for the Pass-B candidate JSON output')

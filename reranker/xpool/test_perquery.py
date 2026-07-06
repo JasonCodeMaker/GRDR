@@ -192,8 +192,7 @@ def main():
                         help='Optional path for structured summary JSON')
     custom_parser.add_argument('--index_safe_candidates', action='store_true',
                         help='Use candidate file row index instead of query text when selecting per-query candidates')
-    # Pass-B (efficiency) latency contract --- see
-    # research_html/packages/2026-05-15-panda-baselines/docs/eval-efficiency.html
+    # Pass-B (efficiency) latency contract for subset-based latency measurement.
     custom_parser.add_argument('--subset_manifest', type=str, default=None,
                         help='Pass-B latency manifest with warmup_query_ids + timed_query_ids')
     custom_parser.add_argument('--warmup_n_used', type=int, default=10,
@@ -201,7 +200,7 @@ def main():
     custom_parser.add_argument('--wall_time_cap_s', type=float, default=300.0,
                         help='Per-cell wall-time cap; stops between queries when elapsed exceeds this')
     custom_parser.add_argument('--latency_helpers_dir', type=str,
-                        default='research_html/packages/2026-05-15-panda-baselines/scripts',
+                        default='utils',
                         help='Path containing latency_helpers.py')
     custom_parser.add_argument('--skip_cache_miss', action='store_true',
                         help='Drop candidates that miss the .npz cache instead of '

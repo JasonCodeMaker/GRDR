@@ -1,9 +1,7 @@
 """
 Storage Simulator for Feature Representations  [DEPRECATED]
 
-Superseded by scripts/panda_figure/storage_measure.py (measured byte counts) and
-governed by the project Storage Accounting SSOT (scripts/panda_figure/storage_ssot.py
-+ storage_accounting_ssot.md). Retained only for the feature-size comparison below.
+Retained only for feature-size comparison experiments in this minimal release.
 The GRDR SSOT per-video footprint is 32 B = V*L int16 codes (4*3*2 = 24 B) + int64 id (8 B);
 this simulator models the 24 B code payload only (no id; sample-based npz extrapolation).
 
