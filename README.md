@@ -254,8 +254,6 @@ GRDR/
 ├── scripts/
 │   ├── Train/                    # One training script per paper dataset
 │   └── Eval/                     # Inductive and full-corpus eval per dataset
-├── config/reproduction/          # Release manifest and expected metrics
-└── tests/                        # Release layout and reproduction checks
 ```
 
 ## Citation
