@@ -1,41 +1,66 @@
-# GRDR: Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval
+# GRDR: A learned semantic-key index for large-scale text-to-video retrieval
 
 [![arXiv](https://img.shields.io/badge/arXiv-2601.21193-b31b1b.svg)](https://arxiv.org/abs/2601.21193)
 [![HuggingFace](https://img.shields.io/badge/HuggingFace-GRDR--TVR-yellow)](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-<p align="center">
-  <img src="assets/framework.png" width="90%">
-</p>
+Official implementation of **"GRDR: A Learned Semantic-Key Index for Large-Scale Text-to-Video Retrieval"**.
 
-Official implementation of **"Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs for Efficient Text-to-Video Retrieval"**.
+<p align="center">
+  <img src="assets/inference.png" width="95%" alt="GRDR inference and reranking pipeline">
+</p>
 
 ## Overview
 
-GRDR achieves **300x speedup** in retrieval latency and **42x storage reduction** compared to dense retrieval baselines while maintaining competitive accuracy.
+GRDR targets large-scale text-to-video retrieval, where the main systems bottleneck is the stage-1 candidate generator rather than the stage-2 reranker. The goal is to keep the stage-1 serving index compact, keep query latency bounded as the corpus grows, and still pass enough relevant candidates to a strong dense reranker.
 
-- **Multi-View Video Tokenizer**: Addresses semantic ambiguity by learning diverse video representations through residual quantization
-- **Unified Co-Training**: Resolves cross-modal misalignment by jointly optimizing the tokenizer and generative retrieval model
+- Dense stage-1 retrieval stores video embeddings and searches them at query time, so storage and search cost grow with the corpus.
+- Prior generative retrieval methods usually assign one semantic key per video, which gives each video only one access path and weakens candidate coverage.
+- GRDR learns multiple query-guided semantic keys per video, jointly trains the tokenizer and generative predictor over a shared codebook, and materializes a bounded candidate pool through prefix-constrained decoding and lookup.
+- X-Pool reranks the candidate pool for fine-grained final ranking.
+
+The deployed stage-1 index stores four semantic keys per video, three codes per key, and an integer video id. Under the paper's storage accounting, this is 32 bytes per video.
+
+<p align="center">
+  <img src="assets/training.png" width="95%" alt="GRDR multi-view tokenizer and unified co-training framework">
+</p>
 
 ## Installation
+
+The release scripts use two conda environments by default:
+
+- `semantictvr` for GRDR training and candidate export.
+- `xpool` for X-Pool reranking.
+
+You can override the names with `SEMANTICTVR_ENV=<env>` and `XPOOL_ENV=<env>` when running scripts.
 
 ```bash
 git clone https://github.com/JasonCoderMaker/GRDR.git
 cd GRDR
-conda create -n grdr python=3.12
-conda activate grdr
+
+conda create -n semantictvr python=3.12
+conda activate semantictvr
 pip install torch==2.6.0 --index-url https://download.pytorch.org/whl/cu124
 pip install transformers==4.47.0 accelerate==1.11.0 faiss-cpu==1.8.0 wandb==0.21.4 \
-    huggingface-hub==0.36.0 einops==0.8.1 timm==1.0.19 ftfy==6.3.1
+    huggingface-hub==0.36.0 einops==0.8.1 timm==1.0.19 ftfy==6.3.1 pandas tqdm
+```
+
+Set up the X-Pool environment separately:
+
+```bash
+conda create -n xpool python=3.8
+conda activate xpool
+pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu118
+pip install transformers==4.6.1 opencv-python==4.5.3.56 pandas numpy tqdm tensorboard ftfy
 ```
 
 ## Data Preparation
 
-All features and checkpoints are hosted on HuggingFace: [JasonCoderMaker/GRDR-TVR](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR)
+All release features and checkpoints are hosted on Hugging Face:
+[JasonCoderMaker/GRDR-TVR](https://huggingface.co/datasets/JasonCoderMaker/GRDR-TVR).
 
-> **Note:** You only need to download the dataset(s) you plan to use. There is no need to download all four datasets.
+Download only the dataset you plan to use:
 
-**Download all components for a specific dataset:**
 ```bash
 # MSR-VTT
 python download_features.py --all --datasets msrvtt
@@ -46,52 +71,105 @@ python download_features.py --all --datasets actnet
 # DiDeMo
 python download_features.py --all --datasets didemo
 
-# LSMDC
-python download_features.py --all --datasets lsmdc
+# Panda
+python download_features.py --all --datasets panda
 ```
 
-**Download specific components:**
+Download individual components when you do not need the full bundle:
+
 ```bash
-# Only InternVideo2 features
+# InternVideo2 features only
 python download_features.py --features --datasets msrvtt actnet
 
-# Only GRDR checkpoints
+# GRDR checkpoints only
 python download_features.py --grdr --datasets msrvtt
 
-# Only Xpool checkpoints and features
+# X-Pool checkpoints and cached video features only
 python download_features.py --xpool --xpool-features --datasets msrvtt
 ```
 
 ## Evaluation
 
-### Stage 1: Generative Recall
+The paper's main setting is full-corpus retrieval: the search pool is the union of training and test videos. Each script first exports GRDR candidates, then reranks the exported candidate JSON with X-Pool.
 
 ```bash
-python run.py --eval --dataset msrvtt \
-    --eval_checkpoint output/GRDR/msrvtt/best_model/best_model.pt \
-    --code_num 128 --max_length 3 --num_candidates 100 --setting 1
+# Run one dataset first
+python download_features.py --all --datasets msrvtt
+bash scripts/Eval/MSRVTT/full_corpus.sh
+
+# Full-corpus evaluation for all paper datasets
+bash scripts/Eval/MSRVTT/full_corpus.sh
+bash scripts/Eval/ACTNET/full_corpus.sh
+bash scripts/Eval/DiDeMo/full_corpus.sh
+bash scripts/Eval/Panda/full_corpus.sh
 ```
+
+Inductive scripts are supplemental and use the same released checkpoints:
+
+```bash
+bash scripts/Eval/MSRVTT/Inductive.sh
+bash scripts/Eval/ACTNET/Inductive.sh
+bash scripts/Eval/DiDeMo/Inductive.sh
+bash scripts/Eval/Panda/Inductive.sh
+```
+
+### Stage 1: Generative Recall
+
+This example exports MSR-VTT full-corpus candidates with the released GRDR checkpoint:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 conda run -n semantictvr python run.py \
+    --candidate_export \
+    --eval_checkpoint output/checkpoints/GRDR/msrvtt/best_model/best_model.pt \
+    --model_name t5-small \
+    --dataset msrvtt \
+    --setting 2 \
+    --code_num 128 \
+    --max_length 3 \
+    --batch_size 40 \
+    --eval_batch_size 40 \
+    --num_latent_tokens 4 \
+    --num_candidates 100 \
+    --candidate_handoff_cap 300 \
+    --inference_reorder_by_access_score \
+    --access_score_bucket_gamma 0.50 \
+    --output_json candidates/GRDR/msrvtt/msrvtt_t2_100_candidates.json \
+    --seed 42 \
+    --device 0 \
+    --use_pseudo_queries
+```
+
+For Panda, use `--code_num 4096`, `--num_candidates 200`, and `--candidate_handoff_cap 600`.
 
 ### Stage 2: Dense Reranking (X-Pool)
 
-First, set up the X-Pool environment: https://github.com/layer6ai-labs/xpool
+Rerank the exact candidate file exported by stage 1:
 
 ```bash
-python reranker/xpool/test.py --dataset_name MSRVTT --rerank_mode \
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH="$PWD/reranker/xpool" \
+conda run -n xpool python reranker/xpool/test.py \
+    --dataset_name MSRVTT \
+    --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
+    --msrvtt_train_file 9k \
     --eval_checkpoint reranker/xpool/ckpt/msrvtt9k_model_best.pth \
-    --candidate_file candidates/msrvtt_c128l3_100_candidates_t1.json
+    --candidate_file candidates/GRDR/msrvtt/msrvtt_t2_100_candidates.json \
+    --rerank_mode \
+    --expanded_pool \
+    --use_cached_video_features \
+    --video_cache_dir reranker/xpool/video_features_cache/Xpool \
+    --batch_size 32 \
+    --pool_batch_size 64 \
+    --result_file reproduction/GRDR/msrvtt/full_corpus/result.csv \
+    --huggingface \
+    --seed 42 \
+    --no_tensorboard
 ```
-
-For full evaluation commands across all datasets, see the evaluation scripts:
-- **Inductive setting**: [`scripts/eval_t1.sh`](scripts/eval_t1.sh) (--setting 1)
-- **Full-corpus setting**: [`scripts/eval_t2.sh`](scripts/eval_t2.sh) (--setting 2)
 
 ### Pre-extract Video Features
 
-Before running latency benchmarks or full-corpus evaluation, pre-extract CLIP video features:
+The release bundle includes cached X-Pool video features. If you need to rebuild a cache from videos, use the X-Pool extractor:
 
 ```bash
-# MSR-VTT (extract both train and test splits for full-corpus evaluation)
 python reranker/xpool/utils/extract_video_features.py \
     --dataset_name MSRVTT \
     --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
@@ -109,77 +187,84 @@ python reranker/xpool/utils/extract_video_features.py \
 
 ### Inference Latency Testing
 
-Measure per-query latency for the two-stage GRDR pipeline. For detailed commands across all datasets, see the scripts under [`reranker/xpool/scripts/`](reranker/xpool/scripts/).
+Measure per-query latency for the two-stage GRDR pipeline with the X-Pool utility:
 
 ```bash
-# MSR-VTT (with GRDR candidate reranking)
 CUDA_VISIBLE_DEVICES=0 python reranker/xpool/test_perquery.py \
     --dataset_name MSRVTT \
     --videos_dir dataset/msrvtt_data/MSRVTT_Videos \
     --checkpoint reranker/xpool/ckpt/msrvtt9k_model_best.pth \
-    --candidate_file candidates/msrvtt_c128l3_100_candidates_t2.json \
+    --candidate_file candidates/GRDR/msrvtt/msrvtt_t2_100_candidates.json \
     --cache_dir reranker/xpool/video_features_cache/Xpool/MSRVTT \
-    --expanded_pool --huggingface --seed 42
+    --expanded_pool \
+    --huggingface \
+    --seed 42
 ```
+
+The paper reports batch-1 online latency on one NVIDIA A6000 GPU. The first 50 queries are warm-up, and the reported latency averages at least 200 later queries.
 
 ## Training
 
+The training scripts pin the released recipe for each dataset:
+
 ```bash
-python run.py --dataset msrvtt --model_name t5-small --code_num 128 --max_length 3 \
-    --batch_size 512 --num_latent_tokens 4 --exp_name msrvtt_train
+bash scripts/Train/MSRVTT.sh
+bash scripts/Train/ACTNET.sh
+bash scripts/Train/DiDeMo.sh
+bash scripts/Train/Panda.sh
 ```
 
-See `scripts/train.sh` for full training configurations.
+They set the model, codebook size, code length, number of semantic views, loss weights, phase epochs, seed, and output path. Training writes checkpoints under `output/checkpoints/GRDR/<dataset>/`. W&B runs default to offline mode.
 
 ## Results
 
-### Inductive Setting
-The search pool is restricted to unseen videos from the test set.
+### Full-corpus setting
 
-| Dataset | R@1 | R@5 | R@10 | Latency (ms) |
-|---------|-----|-----|------|--------------|
-| MSR-VTT | 46.0 | 70.1 | 78.0 | 136 |
-| ActivityNet | 33.7 | 63.7 | 76.6 | 125 |
-| DiDeMo | 39.9 | 65.8 | 74.2 | 118 |
-| LSMDC | 23.5 | 39.4 | 46.2 | 144 |
+The search pool contains both training and test videos. These are the GRDR rows from paper Table 1.
 
-### Full-Corpus Setting
-The search pool contains both training and test videos, reflecting real-world deployment scenarios.
+| Dataset | R@1 | R@5 | R@10 | Latency (ms) | Search pool |
+|---------|-----|-----|------|--------------|-------------|
+| MSR-VTT | 19.2 | 35.9 | 44.8 | 223 | 10,000 |
+| ActivityNet | 21.6 | 44.0 | 55.1 | 214 | 14,926 |
+| DiDeMo | 19.7 | 35.6 | 42.9 | 217 | 9,384 |
+| Panda | 10.2 | 19.8 | 24.9 | 473 | 2,156,234 |
 
-| Dataset | R@1 | R@5 | R@10 | Latency (ms) |
-|---------|-----|-----|------|--------------|
-| MSR-VTT | 17.4 | 32.2 | 39.7 | 184 |
-| ActivityNet | 19.2 | 41.1 | 51.8 | 116 |
-| DiDeMo | 15.5 | 29.7 | 36.1 | 119 |
-| LSMDC | 2.1 | 4.8 | 5.9 | 121 |
+### Inductive setting
+
+The search pool is restricted to unseen test videos. These values come from the release verification CSVs and are supplemental to the paper's full-corpus table.
+
+| Dataset | R@1 | R@5 | R@10 |
+|---------|-----|-----|------|
+| MSR-VTT | 45.7 | 69.8 | 78.8 |
+| ActivityNet | 33.7 | 63.3 | 76.3 |
+| DiDeMo | 39.7 | 66.3 | 74.6 |
+| Panda | 60.9 | 85.9 | 90.9 |
 
 ## Project Structure
 
-```
+```text
 GRDR/
-├── run.py                    # Main training/evaluation entry
-├── download_features.py      # HuggingFace downloader
-├── models/
-│   ├── grdr.py              # Core GRDR model
-│   └── video_rqvae/         # Multi-view video tokenizer
-├── trainer/
-│   ├── trainer.py           # Training logic
-│   └── evaluator.py         # Evaluation metrics
-├── reranker/xpool/          # Dense reranking module
-├── data/                    # Dataset annotations
-└── scripts/                 # Training & evaluation scripts
-    ├── train.sh
-    ├── eval_t1.sh
-    └── eval_t2.sh
+├── run.py                        # Main training and candidate-export entry
+├── download_features.py          # Hugging Face release downloader
+├── models/                       # GRDR model and video tokenizer code
+├── trainer/                      # Training and candidate-generation logic
+├── reranker/xpool/               # X-Pool reranker integration
+├── data/                         # Dataset loaders and annotations
+├── assets/                       # README and paper figures
+├── scripts/
+│   ├── Train/                    # One training script per paper dataset
+│   └── Eval/                     # Inductive and full-corpus eval per dataset
 ```
 
 ## Citation
 
 ```bibtex
-@inproceedings{grdr2026,
-  title={Generative Recall, Dense Reranking: Learning Multi-View Semantic IDs
-         for Efficient Text-to-Video Retrieval},
+@article{zhao2026grdr,
+  title={GRDR: A Learned Semantic-Key Index for Large-Scale Text-to-Video Retrieval},
   author={Zhao, Zecheng and Chen, Zhi and Huang, Zi and Sadiq, Shazia and Chen, Tong},
+  journal={Proceedings of the VLDB Endowment},
+  volume={20},
+  number={1},
   year={2026}
 }
 ```

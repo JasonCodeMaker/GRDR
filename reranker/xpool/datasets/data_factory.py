@@ -7,7 +7,9 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
+from datasets.panda_dataset import PandaDataset, _panda_train_json_path
 from datasets.video_only_dataset import VideoOnlyDataset
+from datasets.media_utils import resolve_media_path
 from torch.utils.data import DataLoader
 from modules.basic_utils import load_json, read_lines
 
@@ -69,6 +71,16 @@ class DataFactory:
                 return DataLoader(dataset, batch_size=config.batch_size,
                             shuffle=False, num_workers=config.num_workers)
 
+        elif config.dataset_name == 'PANDA':
+            if split_type == 'train':
+                dataset = PandaDataset(config, split_type, train_img_tfms)
+                return DataLoader(dataset, batch_size=config.batch_size,
+                            shuffle=True, num_workers=config.num_workers)
+            else:
+                dataset = PandaDataset(config, split_type, test_img_tfms)
+                return DataLoader(dataset, batch_size=config.batch_size,
+                            shuffle=False, num_workers=config.num_workers)
+
         else:
             raise NotImplementedError
 
@@ -110,9 +122,9 @@ class DataFactory:
                         if clip_id != '1012_Unbreakable_00.05.16.065-00.05.21.941':
                             clip_ids.append(clip_id)
 
-            def lsmdc_path_fn(videos_dir, clip_id, video_ext):
-                clip_prefix = clip_id.split('.')[0][:-3]
-                return os.path.join(videos_dir, clip_prefix, clip_id + video_ext)
+            def lsmdc_path_fn(config, videos_dir, clip_id, video_ext, split_type):
+                video_id = clip_id if clip_id.endswith(video_ext) else clip_id + video_ext
+                return resolve_media_path("LSMDC", videos_dir, video_id)
 
             return clip_ids, config.videos_dir, '.avi', lsmdc_path_fn
 
@@ -122,24 +134,31 @@ class DataFactory:
             # Strip .mp4 suffix to match cache file naming
             video_ids = [item['video'].replace('.mp4', '') for item in annotations]
 
-            def actnet_path_fn(videos_dir, vid, video_ext):
-                # vid does not include .mp4, add it back
-                return os.path.join(videos_dir, vid + '.mp4')
-
-            return video_ids, config.videos_dir, '', actnet_path_fn
+            return video_ids, config.videos_dir, '.mp4', None
 
         elif config.dataset_name == "DIDEMO":
             anno_file = 'reranker/xpool/data/DIDEMO/didemo_ret_train.json'
             annotations = load_json(anno_file)
             # Strip .mp4 suffix to match cache file naming
             video_ids = [item['video'].replace('.mp4', '') for item in annotations]
-            videos_dir = os.path.join(config.videos_dir, 'train', 'videos')
+            return video_ids, config.videos_dir, '.mp4', None
 
-            def didemo_path_fn(videos_dir, vid, video_ext):
-                # vid does not include .mp4, add it back
-                return os.path.join(videos_dir, vid + '.mp4')
-
-            return video_ids, videos_dir, '', didemo_path_fn
+        elif config.dataset_name == "PANDA":
+            manifest_path = getattr(config, 'panda_distractor_manifest', None)
+            if manifest_path:
+                payload = load_json(manifest_path)
+                raw_ids = payload.get('video_ids', payload) if isinstance(payload, dict) else payload
+                video_ids = [vid.replace('.mp4', '') for vid in raw_ids]
+                return video_ids, config.videos_dir, '.mp4', None
+            annotations = load_json(_panda_train_json_path(config))
+            seen = set()
+            video_ids = []
+            for item in annotations:
+                vid = item['video'].replace('.mp4', '')
+                if vid not in seen:
+                    seen.add(vid)
+                    video_ids.append(vid)
+            return video_ids, config.videos_dir, '.mp4', None
 
         else:
             raise NotImplementedError(f"Dataset {config.dataset_name} not supported for expanded pool")
@@ -164,7 +183,7 @@ class DataFactory:
         """
         img_transforms = init_transform_dict(config.input_res)['clip_test']
         dataset = VideoOnlyDataset(
-            config, video_ids, videos_dir, img_transforms, video_ext, path_fn
+            config, video_ids, videos_dir, img_transforms, video_ext, path_fn, split_type='train'
         )
         return DataLoader(
             dataset,

@@ -5,7 +5,7 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 import torch.distributed as dist
-from torch import nn, Tensor
+from torch import nn
 from tqdm import tqdm
 from transformers.generation.utils import GenerationMixin
 from transformers.modeling_outputs import ModelOutput
@@ -148,7 +148,8 @@ class GRDR(nn.Module, GenerationMixin, ABC):
 
     def forward(self, input_ids=None, attention_mask=None, decoder_input_ids=None, aux_ids=None,
                 video_features=None, token_idx=None, return_code=False, return_quantized_embedding=False,
-                use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False, **kwargs):
+                use_constraint=None, encoder_outputs=None, return_residual_layer=None, return_all=False,
+                **kwargs):
         """
         Dual-path forward:
         - Query path (input_ids provided): Use T5 encoder -> project to code space
@@ -185,18 +186,35 @@ class GRDR(nn.Module, GenerationMixin, ABC):
             video_encoded_features, use_sk=use_constraint, return_probs=True
         )
 
-        # If return_all, skip token selection and return all latent tokens
+        # If return_all, skip token selection and return all latent tokens.
+        # K1 (codebook_seed_all_slots) calls our_encode_dual with return_all=True
+        # so the loop-boundary k-means seed sees explicit per-slot signal.
         if return_all:
             video_decoded_features, reconstructed_features = self.video_rqvae.decoder(video_quantized_features)
 
+            scale = self.logit_scale.exp().clamp(min=20.0, max=100.0)
+            all_layer_logits = [(1 - layer_d / 2) * scale for layer_d in distances]
+            # Stack into [B, N, L, code_number]
+            all_code_logits = torch.stack(all_layer_logits, dim=2)
+            probability = all_code_logits[:, :, -1, :].contiguous()  # [B, N, code_number]
+            discrete_codes = indices[:, :, -1].contiguous()  # [B, N]
+            if all_code_logits.size(2) == 1:
+                return_code_logits = None
+            else:
+                return_code_logits = all_code_logits[:, :, :-1, :].contiguous()  # [B, N, L-1, code_number]
+
             return VideoOutput(
+                # `logits` is the L=code_length route layout used by route-aware
+                # losses; in the return_all path callers consume `code_logits`
+                # directly, and no downstream code reads `logits` here. Setting
+                # to None mirrors the QuantizeOutput contract.
                 logits=None,
                 continuous_embeds=video_encoded_features,
                 quantized_embeds=video_quantized_features,
                 reconstructed_features=reconstructed_features,
-                discrete_codes=None,
-                probability=None,
-                code_logits=None,
+                discrete_codes=discrete_codes,
+                probability=probability,
+                code_logits=return_code_logits,
                 rq_loss=rq_loss,
             )
 
@@ -323,9 +341,11 @@ class GRDR(nn.Module, GenerationMixin, ABC):
             else:
                 indices = self.video_rqvae.get_indices(video_features)
 
-            for i in range(len(batch['video_ids'])):
-                video_id = batch['video_ids'][i]
-                code = indices[i].cpu().tolist()
+            # One device-to-host sync per batch instead of one per sample.
+            all_codes = indices.cpu().tolist()
+
+            for i, video_id in enumerate(batch['video_ids']):
+                code = all_codes[i]
                 sample_codes_dict[video_id] = code
 
                 if return_quantized_features:

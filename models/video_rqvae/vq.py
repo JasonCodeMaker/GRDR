@@ -43,7 +43,6 @@ class VectorQuantizer(nn.Module):
         return z_q
 
     def init_emb(self, data):
-
         centers = kmeans(
             data,
             self.n_e,

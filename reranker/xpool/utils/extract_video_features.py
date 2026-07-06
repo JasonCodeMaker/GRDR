@@ -23,6 +23,9 @@ from datasets.msvd_dataset import MSVDDataset
 from datasets.lsmdc_dataset import LSMDCDataset
 from datasets.actnet_dataset import ActivityNetDataset
 from datasets.didemo_dataset import DiDeMoDataset
+from datasets.panda_dataset import PandaDataset
+from datasets.media_utils import resolve_media_path, strip_media_extension
+from utils.checkpoint import load_state_dict_compat
 
 
 def get_unique_video_ids(config, split_type='test'):
@@ -68,6 +71,13 @@ def get_unique_video_ids(config, split_type='test'):
         dataset = DiDeMoDataset(config, split_type, test_img_tfms)
         # DiDeMo uses all_pairs list, extract unique video IDs and remove .mp4 suffix
         return list(dict.fromkeys([pair[0].replace('.mp4', '') for pair in dataset.all_pairs]))
+
+    elif config.dataset_name == 'PANDA':
+        # PandaDataset stores raw {video, caption} rows in self.entries; video field
+        # is e.g. 'train/00000000_-xxx_clip00.mp4'. Strip extension to match the on-disk
+        # frame-dir name and the cache-key convention used elsewhere.
+        dataset = PandaDataset(config, split_type, test_img_tfms)
+        return list(dict.fromkeys(strip_media_extension(row['video']) for row in dataset.entries))
     else:
         raise NotImplementedError(f"Dataset {config.dataset_name} not supported")
 
@@ -77,17 +87,19 @@ class VideoFeatureExtractor:
     Extract and cache video frame-level CLIP embeddings.
     """
 
-    def __init__(self, model, config, cache_dir: str, device='cuda'):
+    def __init__(self, model, config, cache_dir: str, device='cuda', split_type: str = 'test'):
         """
         Args:
             model: XPool model (CLIPBaseline)
             config: Configuration object
             cache_dir: Directory to save cached features
             device: Device to run extraction on
+            split_type: 'train' or 'test' (for DiDeMo path resolution)
         """
         self.model = model
         self.config = config
         self.cache_dir = cache_dir
+        self.split_type = split_type
         self.device = torch.device(device if torch.cuda.is_available() else 'cpu')
 
         # Create cache directory
@@ -107,24 +119,10 @@ class VideoFeatureExtractor:
         print(f"Cache directory: {cache_dir}")
 
     def _get_video_path(self, video_id: str, videos_dir: str) -> str:
-        """
-        Construct dataset-specific video path.
-        
-        Args:
-            video_id: Video identifier
-            videos_dir: Base directory containing videos
-            
-        Returns:
-            Full path to video file
-        """
-        if self.config.dataset_name == 'LSMDC':
-            clip_prefix = video_id.split('.')[0][:-3]
-            video_path = os.path.join(videos_dir, clip_prefix, video_id + '.avi')
-        else:
-            # Default structure for other datasets (MSRVTT, MSVD, ACTNET)
-            video_path = os.path.join(videos_dir, video_id + '.mp4')
-        
-        return video_path
+        """Resolve a video_id to an existing frame-dir or video-file path via resolve_media_path."""
+        return resolve_media_path(
+            self.config.dataset_name, videos_dir, video_id, split_type=self.split_type
+        )
 
     def extract_video_features(self, video_id: str, video_path: str) -> np.ndarray:
         """
@@ -151,8 +149,8 @@ class VideoFeatureExtractor:
             else:
                 return cached_data['frame_embeds']
 
-        # Load video frames
-        frames, frame_indices = VideoCapture.load_frames_from_video(
+        # Load frames (handles both frame-dirs and video files)
+        frames, frame_indices = VideoCapture.load_frames(
             video_path,
             self.config.num_frames,
             self.config.video_sample_type
@@ -174,6 +172,9 @@ class VideoFeatureExtractor:
 
         # Convert to numpy
         frame_embeds = video_features.cpu().numpy()
+
+        # Ensure subdir exists (PANDA video_id carries a "train/"/"test/" prefix).
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
 
         # Save to cache based on pooling type
         if self.config.pooling_type == "avg":
@@ -248,6 +249,10 @@ def main():
                         help='Maximum number of videos to process (for testing)')
     parser.add_argument('--split', type=str, default='train', choices=['train', 'test'],
                         help='Dataset split to extract features from (train or test)')
+    parser.add_argument('--shard_id', type=int, default=0,
+                        help='Index of this shard in [0, shard_total). Deterministic hash partition by video_id.')
+    parser.add_argument('--shard_total', type=int, default=1,
+                        help='Total number of shards. Set >1 to split work across hosts/GPUs.')
 
     args, unknown = parser.parse_known_args()
 
@@ -273,9 +278,7 @@ def main():
     if args.checkpoint:
         if os.path.exists(args.checkpoint):
             print(f"Loading checkpoint: {args.checkpoint}")
-            checkpoint = torch.load(args.checkpoint, map_location='cpu')
-            state_dict = checkpoint.get('state_dict', checkpoint)
-            model.load_state_dict(state_dict)
+            load_state_dict_compat(model, args.checkpoint)
         else:
             print(f"Warning: Checkpoint not found at {args.checkpoint}")
 
@@ -284,7 +287,8 @@ def main():
         model=model,
         config=config,
         cache_dir=cache_dir,
-        device='cuda' if torch.cuda.is_available() else 'cpu'
+        device='cuda' if torch.cuda.is_available() else 'cpu',
+        split_type=args.split,
     )
 
 
@@ -292,6 +296,14 @@ def main():
     print(f"\nLoading {args.split} dataset...")
     unique_video_ids = get_unique_video_ids(config, args.split)
     print(f"Found {len(unique_video_ids)} unique videos")
+
+    if args.shard_total > 1:
+        import hashlib
+        def _shard(vid):
+            return int(hashlib.sha1(vid.encode('utf-8')).hexdigest(), 16) % args.shard_total
+        before = len(unique_video_ids)
+        unique_video_ids = [v for v in unique_video_ids if _shard(v) == args.shard_id]
+        print(f"Sharding: shard {args.shard_id}/{args.shard_total} -> {len(unique_video_ids)}/{before} videos")
 
     if args.max_videos is not None:
         unique_video_ids = unique_video_ids[:args.max_videos]

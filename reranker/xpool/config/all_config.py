@@ -16,6 +16,12 @@ class AllConfig(Config):
         parser.add_argument('--dataset_name', type=str, default='MSRVTT', help="Dataset name")
         parser.add_argument('--videos_dir', type=str, default='dataset/msrvtt_data/MSRVTT_Videos', help="Location of videos")
         parser.add_argument('--msrvtt_train_file', type=str, default='9k')
+        parser.add_argument('--panda_use_pseudo_queries', action='store_true', default=False,
+                            help="PANDA only: train on panda_ret_train_addition.json (P7 pseudo-queries). Default off uses panda_ret_train.json (original 2.15M captions).")
+        parser.add_argument('--panda_distractor_manifest', type=str, default=None,
+                            help="PANDA only: JSON file with {'video_ids': [...]} restricting the expanded_pool train list. Used by P1.c distractor sweeps.")
+        parser.add_argument('--pool_batch_size', type=int, default=64,
+                            help="Text-batch size for transformer pool_frames during eval. Lower this on large expanded pools to control CPU memory (pooled_batch ~ N_vids * pool_batch_size * 512 * 4 bytes).")
         parser.add_argument('--num_frames', type=int, default=12)
         parser.add_argument('--video_sample_type', default='uniform', help="'rand'/'uniform'")
         parser.add_argument('--input_res', type=int, default=224)
@@ -27,6 +33,8 @@ class AllConfig(Config):
         parser.add_argument('--log_step', type=int, default=10, help="Print training log every n steps")
         parser.add_argument('--evals_per_epoch', type=int, default=5, help="Number of times to evaluate per epoch")
         parser.add_argument('--load_epoch', type=int, help="Epoch to load from exp_name, or -1 to load model_best.pth")
+        parser.add_argument('--best_r1_floor', type=float, default=-1.0, help="Seed Trainer.best so a resumed run will not overwrite model_best.pth unless R@1 exceeds this floor")
+        parser.add_argument('--early_stop_patience', type=int, default=0, help="Stop training when val R@1 fails to improve for this many consecutive evals (0 = disabled)")
         parser.add_argument('--eval_window_size', type=int, default=5, help="Size of window to average metrics")
         parser.add_argument('--metric', type=str, default='t2v', help="'t2v'/'v2t'")
 
@@ -56,13 +64,21 @@ class AllConfig(Config):
         parser.add_argument('--eval_checkpoint', type=str, default='reranker/xpool/ckpt/msrvtt9k_model_best.pth', help='Checkpoint path for evaluation')
         parser.add_argument('--candidate_file', type=str, default=None, help='Path to candidate JSON file for reranking mode')
         parser.add_argument('--rerank_mode', action='store_true', default=False, help='Enable candidate-based evaluation')
+        parser.add_argument('--index_safe_candidate_mask', action='store_true', default=False,
+                            help='Build candidate masks from candidate JSON row order instead of query text')
+        parser.add_argument('--save_per_query_ranks', type=str, default=None,
+                            help='Optional JSON path for per-query ranks from batch evaluation')
 
         # expanded pool evaluation parameters
         parser.add_argument('--expanded_pool', action='store_true',
                             help='Add training videos to search pool for expanded evaluation')
+        parser.add_argument('--use_cached_video_features', action='store_true',
+                            help='Load all evaluation video features from cache instead of extracting them from media files')
+        parser.add_argument('--video_cache_dir', type=str, default=None,
+                            help='Base directory containing cached video features; defaults to the architecture-specific cache root')
 
         # result saving parameters
-        parser.add_argument('--result_file', type=str, default='test_results.csv', help='Filename for CSV results (saved to output/reranker/)')
+        parser.add_argument('--result_file', type=str, default='test_results.csv', help='Filename for CSV results (saved to output/evaluation_results/rerank/)')
 
         # system parameters
         parser.add_argument('--num_workers', type=int, default=8)

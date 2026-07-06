@@ -4,9 +4,29 @@ import json
 import torch
 import numpy as np
 from tqdm import tqdm
+from pathlib import Path
 from typing import Dict, List, Optional
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+
+
+def resolve_cached_feature_path(cache_dir: str, dataset_name: str, video_id: str) -> str:
+    """Resolve cached X-Pool feature path, including Panda train/test subdirs."""
+    normalized_id = video_id[:-4] if video_id.endswith(('.mp4', '.avi')) else video_id
+    base = os.path.join(cache_dir, f"{normalized_id}.npz")
+    if os.path.exists(base):
+        return Path(base)
+    if dataset_name == 'PANDA':
+        candidates = [
+            os.path.join(cache_dir, 'test', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'train', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'PANDA', 'test', f"{normalized_id}.npz"),
+            os.path.join(cache_dir, 'PANDA', 'train', f"{normalized_id}.npz"),
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return Path(path)
+    return Path(base)
 
 
 class PerQueryEvaluator:
@@ -51,7 +71,8 @@ class PerQueryEvaluator:
         candidates_file: Optional[str] = None,
         device: Optional[str] = None,
         excluded_videos: Optional[List[str]] = None,
-        video_batch_size: int = 1000
+        video_batch_size: int = 1000,
+        skip_cache_miss: bool = False,
     ):
         self.model = model
         self.config = config
@@ -61,6 +82,11 @@ class PerQueryEvaluator:
         self.candidates_file = candidates_file
         self.excluded_videos = set(excluded_videos) if excluded_videos else set()
         self.video_batch_size = video_batch_size
+        # When True (Pass-B with cross-baseline cache layouts), candidates that
+        # miss the .npz cache are dropped silently rather than falling back to
+        # on-the-fly extraction. Used by EERCF→X-Pool stage2 where EERCF emits
+        # doubled-prefix LSMDC ids that don't resolve in X-Pool's cache.
+        self.skip_cache_miss = skip_cache_miss
 
         # Setup device
         if device is None:
@@ -195,7 +221,7 @@ class PerQueryEvaluator:
         """
         # Normalize video ID to match cache file naming
         normalized_id = self._normalize_video_id(video_id)
-        cache_path = os.path.join(self.cache_dir, f"{normalized_id}.npz")
+        cache_path = resolve_cached_feature_path(self.cache_dir, self.config.dataset_name, normalized_id)
 
         if not os.path.exists(cache_path):
             return None
@@ -286,29 +312,26 @@ class PerQueryEvaluator:
 
         Note: No in-memory caching - each query loads features independently.
 
-        Args:
-            video_id: Video identifier
-
-        Returns:
-            Frame embeddings tensor [num_frames, embed_dim]
+        When self.skip_cache_miss is set, a cache miss raises FileNotFoundError
+        instead of falling back to extraction; the caller's try/except then drops
+        the candidate. This is used by Pass-B EERCF→X-Pool stage2 where some
+        baselines emit candidate ids in a format X-Pool's cache can't resolve.
         """
         if self.use_cache:
-            # Load from disk cache (.npz file)
             features = self._load_cached_features(video_id)
             if features is not None:
                 return features
-            else:
-                # Fallback to on-the-fly extraction if cache miss
-                print(f"Warning: Cache miss for {video_id}, extracting on-the-fly")
-                return self._extract_video_features(video_id)
-        else:
-            # Extract from video file on-the-fly
+            if self.skip_cache_miss:
+                raise FileNotFoundError(f"cache miss (skip): {video_id}")
+            print(f"Warning: Cache miss for {video_id}, extracting on-the-fly")
             return self._extract_video_features(video_id)
+        return self._extract_video_features(video_id)
 
     def evaluate_query(
         self,
         query_text: str,
-        video_id_gt: Optional[str] = None
+        video_id_gt: Optional[str] = None,
+        candidate_query_idx: Optional[int] = None
     ) -> Dict:
         """
         Evaluate a single text query against all videos.
@@ -319,6 +342,8 @@ class PerQueryEvaluator:
         Args:
             query_text: Text query string
             video_id_gt: Ground truth video ID (optional, for rank computation)
+            candidate_query_idx: Candidate-file row to use in candidate mode.
+                This avoids duplicate-query-text collisions in diagnostics.
 
         Returns:
             Dictionary containing:
@@ -375,7 +400,9 @@ class PerQueryEvaluator:
         # If candidates mode: use per-query candidates, else use all videos
         if self.use_candidates:
             # Look up candidate pool for this query
-            if query_text in self.query_text_to_idx:
+            if candidate_query_idx is not None and candidate_query_idx in self.query_candidates_map:
+                search_pool = self.query_candidates_map[candidate_query_idx]
+            elif query_text in self.query_text_to_idx:
                 candidate_query_idx = self.query_text_to_idx[query_text]
                 search_pool = self.query_candidates_map[candidate_query_idx]
             else:
@@ -417,6 +444,12 @@ class PerQueryEvaluator:
                     batch_video_embeds.append(video_features)
                     batch_valid_indices.append(batch_start + local_idx)
                     valid_video_ids.append(video_id)
+                except FileNotFoundError as e:
+                    if self.skip_cache_miss:
+                        # Silent skip — cross-baseline id-format mismatch is expected.
+                        continue
+                    print(f"Error processing video {video_id}: {e}")
+                    continue
                 except Exception as e:
                     print(f"Error processing video {video_id}: {e}")
                     continue
@@ -470,6 +503,28 @@ class PerQueryEvaluator:
             torch.cuda.empty_cache() if torch.cuda.is_available() else None
         
         if len(valid_video_ids) == 0:
+            if self.skip_cache_miss:
+                # All candidates skipped (cross-baseline id-format mismatch).
+                # Return an empty-candidate result so the per-query loop continues.
+                timing['video_load'] = time.time() - video_load_start - pooling_time - sim_time
+                timing['frame_pooling'] = pooling_time
+                timing['similarity_compute'] = sim_time
+                timing['total'] = time.time() - total_start
+                self.query_similarities[query_idx] = {}
+                self.query_count += 1
+                for k, v in timing.items():
+                    if k in self.timing_stats:
+                        self.timing_stats[k].append(v)
+                return {
+                    'query_idx': query_idx,
+                    'candidate_query_idx': candidate_query_idx,
+                    'query_text': query_text,
+                    'video_id_gt': video_id_gt,
+                    'rank': -1,
+                    'ranked_videos': [],
+                    'candidate_count': 0,
+                    'timing': timing,
+                }
             raise ValueError("No valid video features found")
         
         timing['video_load'] = time.time() - video_load_start - pooling_time - sim_time
@@ -507,10 +562,12 @@ class PerQueryEvaluator:
 
         return {
             'query_idx': query_idx,
+            'candidate_query_idx': candidate_query_idx,
             'query_text': query_text,
             'video_id_gt': video_id_gt,
             'similarities': similarity_dict,
             'ranked_videos': ranked_videos,
+            'candidate_count': len(search_pool),
             'rank': rank,
             'timing': timing
         }

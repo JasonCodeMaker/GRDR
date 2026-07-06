@@ -1,8 +1,12 @@
 """
-Storage Simulator for Feature Representations
+Storage Simulator for Feature Representations  [DEPRECATED]
+
+Retained only for feature-size comparison experiments in this minimal release.
+The GRDR SSOT per-video footprint is 32 B = V*L int16 codes (4*3*2 = 24 B) + int64 id (8 B);
+this simulator models the 24 B code payload only (no id; sample-based npz extrapolation).
 
 Compares storage requirements of:
-1. SemanticID: [4, 3] int16 array
+1. SemanticID: [4, 3] int16 array  (V=4 latent-token sIDs x L=3 codes; SSOT code payload)
 2. Video Level Feature: [512] float32 array
 3. Frame Level Feature: [12, 512] float32 array
 """
@@ -14,7 +18,7 @@ from typing import Dict, Tuple
 
 # Feature specifications
 FEATURE_SPECS = {
-    "SemanticID": {"shape": (1, 4), "dtype": np.int16},
+    "SemanticID": {"shape": (4, 3), "dtype": np.int16},  # V=4 sIDs x L=3 codes (SSOT code payload)
     "VideoLevelFeature": {"shape": (512,), "dtype": np.float32},
     "FrameLevelFeature": {"shape": (12, 512), "dtype": np.float32},
 }
@@ -30,8 +34,8 @@ def generate_features(feature_type: str, num_samples: int) -> np.ndarray:
     dtype = spec["dtype"]
 
     if dtype == np.int16:
-        # SemanticID: simulate codebook indices (0-127 for typical codebook)
-        return np.random.randint(0, 128, size=shape, dtype=dtype)
+        # SemanticID: simulate codebook indices (0-4095 for c4096)
+        return np.random.randint(0, 4096, size=shape, dtype=dtype)
     else:
         # Float features: normalized random features
         return np.random.randn(*shape).astype(dtype)

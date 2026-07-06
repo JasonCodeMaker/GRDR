@@ -1,22 +1,52 @@
-# Ignore dataset contents, but keep the folder
-dataset/*
-!dataset/.gitkeep
-
-# Ignore cache contents, but keep the folder
-cache/*
-!cache/.gitkeep
-
-reranker/xpool/video_features_cache
-reranker/xpool/ckpt/
-
-output
-
-wandb
-logs
-# ----------------------------------------------------------------------------
-# Python Runtime
-# ----------------------------------------------------------------------------
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
+
+# Local tools and scratch
+.claude/
+.codex
+.vscode/
+.test_artifacts/
+.worktrees/
+/test/
+/tests/
+/docs/superpowers/
+/config/reproduction/
+AGENTS.md
+CLAUDE.md
+WORKFLOW.md
+paper/
+# Data, caches, and external assets
+/dataset/*
+!/dataset/.gitkeep
+/cache/*
+!/cache/.gitkeep
+/data/*/none/
+/reranker/xpool/video_features_cache
+/reranker/xpool/ckpt/*
+!/reranker/xpool/ckpt/.gitkeep
+candidates/_backup
+
+# Runtime outputs
+/figures/
+/graphify-out/
+/index/
+/logs/
+/output
+/var
+/wandb/
+/outputs
+
+# Generated candidates
+/candidates/*.json
+/candidates/baseline/
+/candidates/baselines/
+/candidates/GRDR/*/
+/candidates/*_ann_*_candidates_t*.json
+/candidates/panda_c*_candidates_t*.json
+
+# Research packages are opt-in so abandoned directions stay local.
+/research/*
+/research_html

@@ -88,7 +88,7 @@ class VideoRQVAE_V2(nn.Module):
             sk_epsilons=sk_epsilons,
             sk_iters=sk_iters,
             use_linear=use_linear,
-            beta=beta
+            beta=beta,
         )
 
         self.decode_layer_dims = self.encode_layer_dims[::-1]

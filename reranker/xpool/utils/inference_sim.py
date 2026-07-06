@@ -587,7 +587,7 @@ def main():
                         help='Frame pooling strategy')
     parser.add_argument('--video_batch_size', type=int, default=5000,
                         help='Batch size for video processing (matches evaluator.py default)')
-    parser.add_argument('--output', type=str, default='output/reranker/latency_simulation_results',
+    parser.add_argument('--output', type=str, default='output/evaluation_results/rerank/latency_simulation_results',
                         help='Output path for results JSON')
     parser.add_argument('--checkpoint', type=str,
                         default='reranker/xpool/ckpt/msrvtt9k_model_best.pth',
@@ -656,11 +656,8 @@ def main():
     # Load checkpoint
     if os.path.exists(args.checkpoint):
         print(f"Loading checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
-        if 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
+        from utils.checkpoint import load_state_dict_compat
+        load_state_dict_compat(model, args.checkpoint)
     else:
         print(f"Warning: Checkpoint not found: {args.checkpoint}")
         print("Using randomly initialized model")

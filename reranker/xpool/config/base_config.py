@@ -19,6 +19,8 @@ class Config(ABC):
         self.log_step = args.log_step
         self.evals_per_epoch = args.evals_per_epoch
         self.load_epoch = args.load_epoch
+        self.best_r1_floor = args.best_r1_floor
+        self.early_stop_patience = args.early_stop_patience
         self.eval_window_size = args.eval_window_size
         self.metric = args.metric
 
@@ -51,9 +53,15 @@ class Config(ABC):
         self.result_file = args.result_file
         self.candidate_file = args.candidate_file
         self.rerank_mode = args.rerank_mode
+        self.index_safe_candidate_mask = args.index_safe_candidate_mask
+        self.save_per_query_ranks = args.save_per_query_ranks
         self.expanded_pool = args.expanded_pool
+        self.use_cached_video_features = args.use_cached_video_features
+        self.video_cache_dir = args.video_cache_dir
+        self.panda_use_pseudo_queries = getattr(args, 'panda_use_pseudo_queries', False)
+        self.panda_distractor_manifest = getattr(args, 'panda_distractor_manifest', None)
+        self.pool_batch_size = getattr(args, 'pool_batch_size', 64)
     
     @abstractmethod
     def parse_args(self):
         raise NotImplementedError
-

@@ -14,6 +14,7 @@ from modules.basic_utils import load_json
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 
 
 class MSRVTTDataset(Dataset):
@@ -50,9 +51,9 @@ class MSRVTTDataset(Dataset):
             
     def __getitem__(self, index):
         video_path, caption, video_id = self._get_vidpath_and_caption_by_index(index)
-        imgs, idxs = VideoCapture.load_frames_from_video(video_path, 
-                                                         self.config.num_frames, 
-                                                         self.config.video_sample_type)
+        imgs, idxs = VideoCapture.load_frames(video_path,
+                                              self.config.num_frames,
+                                              self.config.video_sample_type)
 
         # process images of video
         if self.img_transforms is not None:
@@ -75,11 +76,11 @@ class MSRVTTDataset(Dataset):
         # returns video path and caption as string
         if self.split_type == 'train':
             vid, caption = self.all_train_pairs[index]
-            video_path = os.path.join(self.videos_dir, vid + '.mp4')
         else:
             vid = self.test_df.iloc[index].video_id
-            video_path = os.path.join(self.videos_dir, vid + '.mp4')
             caption = self.test_df.iloc[index].sentence
+
+        video_path = resolve_media_path(self.config.dataset_name, self.videos_dir, vid)
 
         return video_path, caption, vid
 
@@ -99,7 +100,7 @@ class MSRVTTDataset(Dataset):
             vid = annotation['video_id']
             self.vid2caption[vid].append(caption)
     
-    def _generate_candidate_mask(self, candidate_file, extra_vid_ids=None):
+    def _generate_candidate_mask(self, candidate_file, extra_vid_ids=None, index_safe=False):
         """
         Generate boolean mask for candidate reranking constraints.
 
@@ -119,12 +120,16 @@ class MSRVTTDataset(Dataset):
 
         results = candidate_data['results']
 
-        # Build query_text -> candidate_videos mapping
+        # Build candidate mappings. The legacy mapping is text keyed; the
+        # index-safe mapping avoids duplicate query text collisions.
         query_to_candidates = {}
-        for result in results:
+        index_to_candidates = {}
+        for row_idx, result in enumerate(results):
             query_text = result['query_text']
             candidates = result['candidates']
-            query_to_candidates[query_text] = set(candidates)
+            candidate_set = set(candidates)
+            query_to_candidates[query_text] = candidate_set
+            index_to_candidates[row_idx] = candidate_set
 
         # Get all video IDs and query texts from test_df
         all_vid_ids = self.test_df['video_id'].tolist()
@@ -153,11 +158,14 @@ class MSRVTTDataset(Dataset):
 
         # Build text list for each video in the SAME order as generate_embeds_per_video_id
         text_list_per_video_id = {}
+        row_index_list_per_video_id = {}
         for idx, v_id in enumerate(all_vid_ids):
             if v_id in text_list_per_video_id:
                 text_list_per_video_id[v_id].append(all_texts[idx])
+                row_index_list_per_video_id[v_id].append(idx)
             else:
                 text_list_per_video_id[v_id] = [all_texts[idx]]
+                row_index_list_per_video_id[v_id] = [idx]
 
         # Calculate max_text_per_vid from the actual text lists
         max_text_per_vid = max(len(text_list) for text_list in text_list_per_video_id.values()) if text_list_per_video_id else 1
@@ -173,12 +181,17 @@ class MSRVTTDataset(Dataset):
         for query_vid_idx in range(num_test_vids):
             query_vid_id = unique_vid_ids[query_vid_idx]
             text_list = text_list_per_video_id[query_vid_id]
+            row_index_list = row_index_list_per_video_id[query_vid_id]
 
             for text_pos, query_text in enumerate(text_list):
                 # Find valid candidate videos for this specific query text
-                if query_text in query_to_candidates:
+                candidates = None
+                if index_safe and text_pos < len(row_index_list):
+                    candidates = index_to_candidates.get(row_index_list[text_pos])
+                elif query_text in query_to_candidates:
                     candidates = query_to_candidates[query_text]
 
+                if candidates is not None:
                     for candidate_vid in candidates:
                         if candidate_vid in vid_to_unique_idx:
                             candidate_unique_idx = vid_to_unique_idx[candidate_vid]

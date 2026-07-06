@@ -32,7 +32,7 @@ class ResidualVectorQuantizer(nn.Module):
                 sk_epsilon=sk_epsilon,
                 sk_iters=sk_iters,
                 use_linear=use_linear,
-                beta=beta
+                beta=beta,
             )
             self.vq_layers.append(quantizer)
 

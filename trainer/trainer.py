@@ -1,5 +1,6 @@
 import json
 import os
+from collections import Counter
 
 import numpy as np
 import torch
@@ -17,7 +18,7 @@ from transformers import T5Config
 from models.grdr import GRDR, QuantizeOutput, VideoOutput
 from utils.model_utils import create_videorqvae, get_optimizer, CodeDriftMonitor
 from utils.training_utils import safe_load, safe_load_embedding, safe_save
-from utils.data_utils import load_shared_features
+from utils.data_utils import has_kmeans_cache, kmeans_cache_path, load_shared_features
 from data.video_dataset import VideoTextDataset, collate_fn
 
 
@@ -97,7 +98,7 @@ class OurTrainer:
         )
 
     @staticmethod
-    def train_step(model: GRDR, batch, current_layer, gathered=None):
+    def train_step(model: GRDR, batch, current_layer, gathered=None, loss_weights=None):
         """
         Train step compatible with VideoTextDataset batch structure.
 
@@ -117,7 +118,7 @@ class OurTrainer:
             aux_ids=batch['aux_ids'],
             return_code=True,
             return_quantized_embedding=True,
-            return_residual_layer= model.code_length if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.module.code_length - 1
+            return_residual_layer= model.code_length if not isinstance(model, torch.nn.parallel.DistributedDataParallel) else model.module.code_length - 1,
         )
 
         # Query path: text caption -> T5 encoder
@@ -141,6 +142,11 @@ class OurTrainer:
         if gathered is None:
             gathered = dist.is_initialized()
 
+        if isinstance(model, torch.nn.parallel.DistributedDataParallel):
+            code_number = model.module.code_number
+        else:
+            code_number = model.code_number
+
         # Contrastive loss: query vs doc
         cl_loss = OurTrainer.compute_contrastive_loss(query_embeds, vid_embeds, gathered=False)
 
@@ -150,19 +156,24 @@ class OurTrainer:
         cl_dd_loss = (1 - F.cosine_similarity(L2_video_features, L2_recon_video_features, dim=-1)).mean()
 
         # Commitment loss: query should predict video sID codes
-        query_ce_loss = F.cross_entropy(query_prob, codes_vid.detach(), label_smoothing=0.1)
-
-        ce_loss = query_ce_loss
+        ce_loss = F.cross_entropy(query_prob, codes_vid.detach(), label_smoothing=0.1)
 
         # Code prediction loss (multi-layer)
         code_loss = 0
         if query_outputs.code_logits is not None and vid_outputs.code_logits is not None:
-            if isinstance(model, torch.nn.parallel.DistributedDataParallel):
-                code_number = model.module.code_number
-            else:
-                code_number = model.code_number
-
-            prior_codes = batch['ids'][:, 1:].contiguous().view(-1)
+            # Robust target derivation. `query_outputs.code_logits` is shape
+            # [B, n_pred, code_number] where n_pred = min(L, code_length) - 1 (set by
+            # grdr.py's `code_logits[:, :-1]` slice on the autoregressive predictions).
+            # batch['ids'] is [B, L] = [start, code0, code1, ...]; the model predicts
+            # batch['ids'][:, 1:1+n_pred] (each output position i predicts ids[:, i+1]).
+            # Earlier slices like `[:, 1:]` or `[:, 1:-1]` only matched specific values
+            # of L (L=code_length+1 in particular), and broke whenever save_code's
+            # `prev_code[1:] + [new_code]` chain produced a wider L. Deriving the slice
+            # from n_pred itself is the only form that holds across every loop and
+            # cascade depth. Trailing positions in batch['ids'] beyond 1+n_pred are
+            # stale codes from earlier loops and are correctly ignored by the loss.
+            n_pred = query_outputs.code_logits.size(1)
+            prior_codes = batch['ids'][:, 1:1 + n_pred].contiguous().view(-1)
             query_code_loss = F.cross_entropy(
                 query_outputs.code_logits.view(-1, code_number),
                 prior_codes
@@ -179,12 +190,96 @@ class OurTrainer:
         # VideoRQVAE quantization loss
         rq_loss = vid_outputs.rq_loss if vid_outputs.rq_loss is not None else 0
 
+        # Route agreement loss: align query/video code distributions as an
+        # in-batch retrieval objective over the shared semantic-ID codebooks.
+        route_agree_loss = 0
+        bucket_route_loss = 0
+        video_rank_loss = 0
+        expanded_size_loss = 0
+        shared_scores = None
+        shared_positive_mask = None
+        bucket_sizes = None
+        if loss_weights is not None:
+            detach_video_route = bool(loss_weights.get('route_agree_stopgrad_video', False))
+            route_loss_enabled = (
+                loss_weights.get('route_agree_loss', 0) != 0 or
+                loss_weights.get('bucket_route_loss', 0) != 0 or
+                loss_weights.get('video_rank_loss', 0) != 0 or
+                loss_weights.get('expanded_size_loss', 0) != 0
+            )
+            if route_loss_enabled:
+                # Compute pair scores + positive mask once; reused across enabled losses.
+                shared_scores = OurTrainer._route_pair_scores(
+                    query_outputs.logits, vid_outputs.logits, detach_video=detach_video_route
+                )
+                shared_positive_mask = OurTrainer._positive_mask(
+                    batch.get('video_ids'), shared_scores.size(0), shared_scores.device
+                )
+            if (
+                loss_weights.get('bucket_route_loss', 0) != 0 or
+                loss_weights.get('video_rank_loss', 0) != 0 or
+                loss_weights.get('expanded_size_loss', 0) != 0
+            ):
+                bucket_sizes = OurTrainer._bucket_sizes_for_batch(
+                    batch.get('video_ids'),
+                    loss_weights.get('route_bucket_size_by_video_id'),
+                    query_outputs.logits.device,
+                    default_size=loss_weights.get('route_bucket_default_size', 1.0)
+                )
+
+        if loss_weights is not None and loss_weights.get('route_agree_loss', 0) != 0:
+            route_agree_loss = OurTrainer.compute_route_agreement_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids'),
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
+            )
+
+        if loss_weights is not None and loss_weights.get('bucket_route_loss', 0) != 0:
+            bucket_route_loss = OurTrainer.compute_bucket_route_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids'),
+                bucket_sizes=bucket_sizes,
+                gamma=loss_weights.get('route_bucket_gamma', 1.0),
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
+            )
+
+        if loss_weights is not None and loss_weights.get('video_rank_loss', 0) != 0:
+            video_rank_loss = OurTrainer.compute_video_rank_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                video_ids=batch.get('video_ids'),
+                bucket_sizes=bucket_sizes,
+                beta=loss_weights.get('video_rank_beta', 0.5),
+                detach_video=detach_video_route,
+                scores=shared_scores,
+                positive_mask=shared_positive_mask,
+            )
+
+        if loss_weights is not None and loss_weights.get('expanded_size_loss', 0) != 0:
+            expanded_size_loss = OurTrainer.compute_expanded_size_loss(
+                query_outputs.logits,
+                vid_outputs.logits,
+                bucket_sizes=bucket_sizes,
+                detach_video=detach_video_route,
+                scores=shared_scores,
+            )
+
         return dict(
             cl_loss=cl_loss,
             ce_loss=ce_loss,
             code_loss=code_loss,
             cl_dd_loss=cl_dd_loss,
-            rq_loss=rq_loss
+            rq_loss=rq_loss,
+            route_agree_loss=route_agree_loss,
+            bucket_route_loss=bucket_route_loss,
+            video_rank_loss=video_rank_loss,
+            expanded_size_loss=expanded_size_loss,
         )
 
     @staticmethod
@@ -200,6 +295,163 @@ class OurTrainer:
         similarities = torch.matmul(gathered_query_embeds, gathered_doc_embeds.transpose(0, 1))
         co_loss = F.cross_entropy(similarities, labels)
         return co_loss
+
+    @staticmethod
+    def _base_video_id(video_id):
+        """Normalize caption-suffixed sample ids back to base video ids."""
+        if not isinstance(video_id, str):
+            return str(video_id)
+        if '_' in video_id:
+            prefix, suffix = video_id.rsplit('_', 1)
+            if suffix.isdigit() and len(suffix) <= 2:
+                return prefix
+        return video_id
+
+    @staticmethod
+    def _positive_mask(video_ids, batch_size, device):
+        if not video_ids:
+            return torch.eye(batch_size, dtype=torch.bool, device=device)
+        if len(video_ids) != batch_size:
+            raise ValueError(
+                f"Expected {batch_size} video ids for route agreement loss, got {len(video_ids)}"
+            )
+        # Factorise base ids into integer labels, then compare via broadcast (was O(B^2) Python).
+        base_ids = np.array([OurTrainer._base_video_id(v) for v in video_ids])
+        _, inverse = np.unique(base_ids, return_inverse=True)
+        inverse_t = torch.from_numpy(inverse).to(device)
+        return inverse_t.unsqueeze(0) == inverse_t.unsqueeze(1)
+
+    @staticmethod
+    def _route_pair_scores(query_logits, video_logits, detach_video=False, eps=1e-8):
+        if query_logits is None or video_logits is None:
+            raise ValueError("Route scoring requires query and video logits")
+        if query_logits.dim() != 3 or video_logits.dim() != 3:
+            raise ValueError(
+                "Route scoring logits must be [batch, code_length, code_number], "
+                f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
+            )
+        if query_logits.shape != video_logits.shape:
+            raise ValueError(
+                "Route scoring query/video logits must have identical shapes, "
+                f"got {tuple(query_logits.shape)} and {tuple(video_logits.shape)}"
+            )
+
+        if detach_video:
+            video_logits = video_logits.detach()
+
+        batch_size, code_length, _ = query_logits.shape
+        scores = query_logits.new_zeros(batch_size, batch_size)
+        for layer_idx in range(code_length):
+            query_probs = F.softmax(query_logits[:, layer_idx], dim=-1)
+            video_probs = F.softmax(video_logits[:, layer_idx], dim=-1)
+            agreement = torch.matmul(query_probs, video_probs.transpose(0, 1))
+            scores = scores + torch.log(agreement.clamp_min(eps))
+        return scores
+
+    @staticmethod
+    def _bucket_sizes_for_batch(video_ids, bucket_lookup, device, default_size=1.0):
+        if not video_ids or not bucket_lookup:
+            return None
+
+        sizes = []
+        for video_id in video_ids:
+            exact_key = str(video_id)
+            base_key = OurTrainer._base_video_id(video_id)
+            size = bucket_lookup.get(exact_key, bucket_lookup.get(base_key, default_size))
+            sizes.append(float(size))
+        return torch.tensor(sizes, dtype=torch.float32, device=device).clamp_min(1.0)
+
+    @staticmethod
+    def compute_route_agreement_loss(query_logits, video_logits, video_ids=None, detach_video=False, eps=1e-8,
+                                     scores=None, positive_mask=None):
+        """Multi-positive in-batch retrieval loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
+        positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
+        log_pos = torch.logsumexp(positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_bucket_route_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
+                                  gamma=1.0, detach_video=False, eps=1e-8,
+                                  scores=None, positive_mask=None):
+        """Bucket-weighted multi-positive route loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
+
+        if bucket_sizes is None:
+            bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
+        else:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+
+        inverse_bucket = (bucket_sizes + 1.0).pow(-float(gamma))
+        positive_weights = positive_mask.to(scores.dtype) * inverse_bucket.unsqueeze(0)
+        positive_weights = positive_weights / positive_weights.sum(dim=1, keepdim=True).clamp_min(eps)
+
+        weighted_positive_scores = scores + torch.log(positive_weights.clamp_min(eps))
+        weighted_positive_scores = weighted_positive_scores.masked_fill(
+            ~positive_mask,
+            torch.finfo(scores.dtype).min
+        )
+        log_pos = torch.logsumexp(weighted_positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_video_rank_loss(query_logits, video_logits, video_ids=None, bucket_sizes=None,
+                                beta=0.5, detach_video=False, eps=1e-8,
+                                scores=None, positive_mask=None):
+        """In-batch video-route ranking loss; accepts cached scores/positive_mask."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        if positive_mask is None:
+            positive_mask = OurTrainer._positive_mask(video_ids, batch_size, scores.device)
+
+        if bucket_sizes is not None:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+            scores = scores - float(beta) * torch.log1p(bucket_sizes).unsqueeze(0)
+
+        positive_scores = scores.masked_fill(~positive_mask, torch.finfo(scores.dtype).min)
+        log_pos = torch.logsumexp(positive_scores, dim=1)
+        log_all = torch.logsumexp(scores, dim=1)
+        return -(log_pos - log_all).mean()
+
+    @staticmethod
+    def compute_expanded_size_loss(query_logits, video_logits, bucket_sizes=None, detach_video=False, eps=1e-8,
+                                   scores=None):
+        """Expected log bucket size under the route distribution; accepts cached scores."""
+        if scores is None:
+            scores = OurTrainer._route_pair_scores(query_logits, video_logits, detach_video=detach_video, eps=eps)
+        batch_size = scores.size(0)
+        if bucket_sizes is None:
+            bucket_sizes = torch.ones(batch_size, dtype=scores.dtype, device=scores.device)
+        else:
+            bucket_sizes = bucket_sizes.to(device=scores.device, dtype=scores.dtype).clamp_min(1.0)
+
+        route_probs = F.softmax(scores, dim=1)
+        size_cost = torch.log1p(bucket_sizes).unsqueeze(0)
+        return (route_probs * size_cost).sum(dim=1).mean()
+
+
+def build_route_bucket_size_by_video_id(code_path):
+    """Build sample-id -> full-route bucket-size lookup from a saved .code JSON."""
+    if not code_path or not os.path.exists(code_path):
+        return {}
+    with open(code_path) as handle:
+        code_by_video = json.load(handle)
+    route_counts = Counter(tuple(code) for code in code_by_video.values())
+    return {
+        str(video_id): int(route_counts[tuple(code)])
+        for video_id, code in code_by_video.items()
+    }
 
 
 def build_loss_weights(config, phase):
@@ -219,7 +471,15 @@ def build_loss_weights(config, phase):
         'ce_loss': config.get(f'{prefix}ce_loss', 0),
         'code_loss': config.get(f'{prefix}code_loss', 0),
         'cl_dd_loss': config.get(f'{prefix}cl_dd_loss', 0),
-        'rq_loss': config.get(f'{prefix}rq_loss', 0)
+        'rq_loss': config.get(f'{prefix}rq_loss', 0),
+        'route_agree_loss': config.get(f'{prefix}route_agree_loss', 0),
+        'bucket_route_loss': config.get(f'{prefix}bucket_route_loss', 0),
+        'video_rank_loss': config.get(f'{prefix}video_rank_loss', 0),
+        'expanded_size_loss': config.get(f'{prefix}expanded_size_loss', 0),
+        'route_agree_stopgrad_video': config.get('route_agree_stopgrad_video', False),
+        'route_bucket_gamma': config.get('route_bucket_gamma', 1.0),
+        'video_rank_beta': config.get('video_rank_beta', 0.5),
+        'route_bucket_default_size': config.get('route_bucket_default_size', 1.0),
     }
 
 
@@ -264,7 +524,7 @@ def train(config, global_step=0):
         num_latent_tokens=config.get('num_latent_tokens', 4),
         e_dim=t5_config.d_model,
         in_dim=config.get('in_dim', 512),
-        device=accelerator.device
+        device=accelerator.device,
     )
     accelerator.print(f'VideoRQVAE created with e_dim={t5_config.d_model} (matching T5 hidden_size)')
 
@@ -293,8 +553,9 @@ def train(config, global_step=0):
     accelerator.print(f'Total model parameters: {total_params / 1e6:.2f}M')
 
     if config.get('codebook_init', None) is not None:
-        from run import read_pkl
-        model.code_embedding[-1].weight.data = torch.tensor(read_pkl(config.get('codebook_init')))
+        import pickle
+        with open(config.get('codebook_init'), 'rb') as f:
+            model.code_embedding[-1].weight.data = torch.tensor(pickle.load(f))
 
     # Phase-specific freezing:
     if config.get('loss_w') == 3:
@@ -312,17 +573,30 @@ def train(config, global_step=0):
     dataset_name = config.get('dataset', 'msrvtt')
     features_root = config.get('features_root', './data_process/datasets/features')
     use_pseudo_queries = config.get('use_pseudo_queries', False)
-
-    accelerator.print(f'Loading features for {dataset_name}...')
-    feature_cache = load_shared_features(
-        dataset_name=dataset_name,
-        features_root=features_root,
-        logger=accelerator,
-        use_pseudo_queries=use_pseudo_queries
-    )
-
     num_latent_tokens = config.get('num_latent_tokens', 4)
     cache_dir = config.get('cache_dir', './cache')
+    train_kmeans_cached = has_kmeans_cache(
+        dataset_name, 'train', num_latent_tokens, cache_dir,
+        use_pseudo_queries=use_pseudo_queries
+    )
+    if train_kmeans_cached:
+        accelerator.print(
+            "K-means cache found; skipping train text feature loads: "
+            f"{kmeans_cache_path(dataset_name, 'train', num_latent_tokens, cache_dir, use_pseudo_queries)}"
+        )
+
+    feature_cache = config.get('feature_cache')
+    if feature_cache is not None:
+        accelerator.print(f'Reusing pre-built feature_cache for {dataset_name} (skipping load_shared_features)')
+    else:
+        accelerator.print(f'Loading features for {dataset_name}...')
+        feature_cache = load_shared_features(
+            dataset_name=dataset_name,
+            features_root=features_root,
+            logger=accelerator,
+            use_pseudo_queries=use_pseudo_queries,
+            load_train_text=not train_kmeans_cached,
+        )
 
     video_codes, aux_ids = None, None
 
@@ -394,18 +668,25 @@ def train(config, global_step=0):
         generator=g,
         worker_init_fn=lambda worker_id: np.random.seed(config.get('seed', 42) + worker_id)
     )
-    # Calculate encoder LR scale based on loop index
     loop = config.get('loop', 0)
-    encoder_lr_scale = 1.0 ** loop
-    accelerator.print(f'Loop {loop}: Encoder LR scale = {encoder_lr_scale:.4f} (base_lr={lr}, encoder_lr={lr * encoder_lr_scale:.2e})')
 
     # Use get_optimizer to apply custom learning rates
-    optimizer = get_optimizer(model, lr=lr, code_length=code_length, encoder_lr_scale=encoder_lr_scale)
+    optimizer = get_optimizer(model, lr=lr, code_length=code_length)
     model, optimizer, data_loader = accelerator.prepare(model, optimizer, data_loader)
     scheduler = get_constant_schedule(optimizer)
 
     # Build loss weights from config based on training phase
     loss_w = build_loss_weights(config, config['loss_w'])
+    if (
+        loss_w.get('bucket_route_loss', 0) != 0 or
+        loss_w.get('video_rank_loss', 0) != 0 or
+        loss_w.get('expanded_size_loss', 0) != 0
+    ):
+        bucket_lookup = build_route_bucket_size_by_video_id(config.get('prev_id'))
+        loss_w['route_bucket_size_by_video_id'] = bucket_lookup
+        accelerator.print(
+            f'Route bucket stats: {len(bucket_lookup)} sample routes from {config.get("prev_id")}'
+        )
 
     step, epoch = 0, 0
     epoch_step = len(data_loader)
@@ -431,7 +712,7 @@ def train(config, global_step=0):
             step += 1
             global_step += 1
             with accelerator.accumulate(model):
-                losses = OurTrainer.train_step(model, batch, current_layer=loop, gathered=False)
+                losses = OurTrainer.train_step(model, batch, current_layer=loop, loss_weights=loss_w)
                 loss = sum([v * loss_w[k] for k, v in losses.items()])
                 accelerator.backward(loss)
                 accelerator.clip_grad_norm_(model.parameters(), 1.)
@@ -451,8 +732,16 @@ def train(config, global_step=0):
 
         # Evaluation at end of epoch
         is_pretrain = (loss_w.get('ce_loss', 0) == 0)
-        _, current_metric = eval_retrieval(model, dataset, val_dataset, test_dataset, tokenizer, batch_size, accelerator, global_step,
-                                           is_pretrain=is_pretrain, code_length=code_length, drift_monitor=drift_monitor)
+        eval_batch_size = config.get('eval_batch_size') or batch_size
+        if eval_batch_size != batch_size:
+            accelerator.print(f'Evaluation batch size: {eval_batch_size} (training batch size: {batch_size})')
+        _, current_metric = eval_retrieval(model, dataset, val_dataset, test_dataset, tokenizer, eval_batch_size, accelerator, global_step,
+                                           is_pretrain=is_pretrain, code_length=code_length, drift_monitor=drift_monitor,
+                                           selection_num_candidates=config.get('num_candidates', 10),
+                                           setting=config.get('setting', 1),
+                                           use_access_reorder=config.get('inference_reorder_by_access_score', True),
+                                           access_bucket_gamma=config.get('access_score_bucket_gamma', 0.50),
+                                           handoff_cap=config.get('candidate_handoff_cap', 0))
         best_metric, last_checkpoint, is_new_best = safe_save(accelerator, model, save_path, best_metric, current_metric,
                                                               last_checkpoint=last_checkpoint)
         if is_new_best:

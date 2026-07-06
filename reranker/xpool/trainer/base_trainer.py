@@ -19,6 +19,7 @@ class BaseTrainer:
         self.optimizer = optimizer
         self.start_epoch = 1
         self.global_step = 0
+        self.stop_flag = False
 
         self.num_epochs = config.num_epochs
         self.writer = writer
@@ -51,6 +52,9 @@ class BaseTrainer:
             result = self._train_epoch(epoch)
             if epoch % self.config.save_every == 0:
                     self._save_checkpoint(epoch, save_best=False)
+            if self.stop_flag:
+                print(f"Early stop triggered after epoch {epoch}.")
+                break
 
     def validate(self):
         return self._valid_epoch_step(0,0,0)

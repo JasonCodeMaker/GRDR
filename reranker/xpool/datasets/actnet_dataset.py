@@ -8,6 +8,7 @@ from collections import defaultdict
 from torch.utils.data import Dataset
 from config.base_config import Config
 from datasets.video_capture import VideoCapture
+from datasets.media_utils import resolve_media_path
 from modules.basic_utils import load_json
 
 
@@ -44,7 +45,7 @@ class ActivityNetDataset(Dataset):
 
     def __getitem__(self, index):
         video_path, caption, video_id = self._get_vidpath_and_caption_by_index(index)
-        imgs, idxs = VideoCapture.load_frames_from_video(
+        imgs, idxs = VideoCapture.load_frames(
             video_path,
             self.config.num_frames,
             self.config.video_sample_type
@@ -66,8 +67,7 @@ class ActivityNetDataset(Dataset):
     def _get_vidpath_and_caption_by_index(self, index):
         """Get video path and caption for the given index."""
         vid, caption = self.all_pairs[index]
-        # video_id already includes .mp4 suffix in annotation
-        video_path = os.path.join(self.videos_dir, vid)
+        video_path = resolve_media_path(self.config.dataset_name, self.videos_dir, vid)
         # Remove .mp4 suffix for video_id used in evaluation
         video_id = vid.replace('.mp4', '')
         return video_path, caption, video_id

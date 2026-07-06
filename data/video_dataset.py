@@ -29,6 +29,7 @@ def sample_validation_from_train(dataset_name, num_samples=1000, seed=42):
         'actnet': './data/actnet/video_retreival_caption/actnet_ret_train.json',
         'didemo': './data/didemo/video_retreival_caption/didemo_ret_train.json',
         'lsmdc': './data/lsmdc/video_retreival_caption/lsmdc_ret_train.json',
+        'panda': './data/panda/video_retreival_caption/panda_ret_train.json',
     }
 
     if dataset_name not in annotation_paths:
@@ -111,6 +112,11 @@ class VideoTextDataset(Dataset):
 
         # Load caption annotations
         self.samples = self._load_annotations()
+        if not self.samples:
+            raise RuntimeError(
+                f"No usable {split} samples for dataset={dataset_name}. "
+                "Check that annotation video IDs match the loaded feature keys."
+            )
 
         print(f"[VideoTextDataset] Loaded {len(self.samples)} {split} samples for {dataset_name}")
 
@@ -189,6 +195,7 @@ class VideoTextDataset(Dataset):
             'actnet': f'./data/actnet/video_retreival_caption/actnet_ret_{self.split}.json',
             'didemo': f'./data/didemo/video_retreival_caption/didemo_ret_{self.split}.json',
             'lsmdc': f'./data/lsmdc/video_retreival_caption/lsmdc_ret_{self.split}.json',
+            'panda': f'./data/panda/video_retreival_caption/panda_ret_{self.split}.json',
         }
 
         if self.dataset_name not in annotation_paths:
@@ -213,6 +220,7 @@ class VideoTextDataset(Dataset):
                 'actnet': './data/actnet/video_retreival_caption/actnet_ret_train_pesudo.json',
                 'didemo': './data/didemo/video_retreival_caption/didemo_ret_train_pesudo.json',
                 'lsmdc': './data/lsmdc/video_retreival_caption/lsmdc_ret_train_pesudo.json',
+                'panda': './data/panda/video_retreival_caption/panda_ret_train_addition.json',
             }
             pseudo_path = pseudo_paths.get(self.dataset_name)
             if pseudo_path and os.path.exists(pseudo_path):
